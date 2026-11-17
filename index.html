@@ -2,71 +2,408 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="refresh" content="0; url=http://127.0.0.1:5055/" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Launching Scoville Overdue Alerts...</title>
-  <script>
-    window.location.replace("http://127.0.0.1:5055/");
-  </script>
-  <style>
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-family: "Segoe UI", Arial, sans-serif;
-      background: #0f172a;
-      color: #f8fafc;
-    }
-    .card {
-      background: #1e293b;
-      border: 1px solid #334155;
-      border-radius: 12px;
-      padding: 32px 36px;
-      max-width: 520px;
-      text-align: center;
-      box-shadow: 0 16px 36px rgba(0,0,0,0.35);
-    }
-    .badge {
-      width: 48px;
-      height: 48px;
-      border-radius: 10px;
-      background: linear-gradient(135deg, #dc2626, #991b1b);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 800;
-      font-size: 18px;
-      margin-bottom: 14px;
-    }
-    h1 { margin: 0 0 8px; font-size: 20px; }
-    p { margin: 0 0 20px; color: #94a3b8; font-size: 14px; line-height: 1.5; }
-    .btn {
-      display: inline-block;
-      padding: 10px 20px;
-      background: #2563eb;
-      color: #fff;
-      text-decoration: none;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 14px;
-    }
-    .foot { margin-top: 18px; font-size: 12px; color: #64748b; }
-    code { color: #cbd5e1; }
-  </style>
+  <title>Scoville Overdue Detailing Alerts — QIWorks</title>
+  <link rel="stylesheet" href="./static/style.css?v=6" />
 </head>
 <body>
-  <div class="card">
-    <div class="badge">SC</div>
-    <h1>Opening Scoville Overdue Alerts...</h1>
-    <p>
-      Redirecting to your local Scoville Overdue Alerts server (<code>http://127.0.0.1:5055</code>) connected to QIWorks Scoville &amp; Local Outlook.
-    </p>
-    <a class="btn" href="http://127.0.0.1:5055/">Open Dashboard Now &rarr;</a>
-    <div class="foot">
-      If the page doesn't load, double-click <code>start.bat</code> (or <code>run_silent.vbs</code>) in your <code>Scoville-Overdue-Alerts</code> folder first.
+  <header class="topbar">
+    <div class="topbar-brand">
+      <div class="brand-badge">SC</div>
+      <div>
+        <h1>Scoville Overdue Alerts</h1>
+        <p class="subtitle">
+          From: <strong id="hdrFromEmail">Local Outlook Account</strong> &middot;
+          Subject: <strong id="hdrSubject">Overdues on Scoville</strong> &middot;
+          Routing: <span>DPM (All 6 Dates) + PS (Field Measurements &amp; PS Request) &middot; Tekla-Linked Skipped</span>
+        </p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <div class="sync-meta">
+        <span class="dot" id="syncStatusDot"></span>
+        <span id="lastSyncText">Syncing Scoville...</span>
+      </div>
+      <a id="openScovilleLink" href="http://scoville:7555/admin/hot" target="_blank" rel="noopener" class="btn btn-outline">
+        Open Scoville &nearr;
+      </a>
+      <button id="btnSyncNow" class="btn btn-primary">
+        &#x21bb; Sync Scoville Now
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabs-nav">
+    <button class="tab-btn active" data-tab="dashboard">
+      Overdue Dashboard &amp; Emails <span class="tab-pill" id="tabOverdueCount">0</span>
+    </button>
+    <button class="tab-btn" data-tab="directory">
+      Team Email Directory <span class="tab-pill neutral" id="tabDirCount">0</span>
+    </button>
+    <button class="tab-btn" data-tab="logs">
+      Email History &amp; Logs <span class="tab-pill neutral" id="tabLogsCount">0</span>
+    </button>
+    <button class="tab-btn" data-tab="settings">
+      Settings &amp; Daily Schedule
+    </button>
+  </nav>
+
+  <div id="toastContainer" class="toast-container"></div>
+
+  <main class="container">
+    <!-- TAB 1: DASHBOARD -->
+    <section id="tab-dashboard" class="tab-panel active">
+      <!-- KPI Strip -->
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">Active Unreleased Items</div>
+          <div class="kpi-value" id="kpiTotalItems">—</div>
+          <div class="kpi-foot" id="kpiOnHoldNote">Synced from Scoville</div>
+        </div>
+        <div class="kpi-card alert">
+          <div class="kpi-label">Overdue Items</div>
+          <div class="kpi-value" id="kpiOverdueItems">0</div>
+          <div class="kpi-foot" id="kpiOverdueMilestones">0 missed detailing dates</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Emails Queued</div>
+          <div class="kpi-value" id="kpiPacketsCount">0</div>
+          <div class="kpi-foot">DPMs &amp; Field-Dims PSs</div>
+        </div>
+        <div class="kpi-card warn">
+          <div class="kpi-label">Due Next 3 Days</div>
+          <div class="kpi-value" id="kpiDueSoon">0</div>
+          <div class="kpi-foot">Upcoming detailing dates</div>
+        </div>
+      </div>
+
+      <!-- Milestone Breakdown Pills -->
+      <div class="milestone-strip" id="milestoneBreakdownStrip"></div>
+
+      <!-- Controls Bar -->
+      <div class="controls-bar">
+        <div class="control-group">
+          <label for="asOfDateInput">Check Overdues As Of:</label>
+          <div class="inline-row">
+            <input type="date" id="asOfDateInput" />
+            <button type="button" class="btn btn-xs btn-ghost" id="btnDateToday" title="Reset to Today">Today</button>
+            <button type="button" class="btn btn-xs btn-ghost" id="btnDateTomorrow" title="Simulate Tomorrow (+1d)">+1d</button>
+            <button type="button" class="btn btn-xs btn-ghost" id="btnDatePlus7" title="Simulate +7 Days Out to preview upcoming overdues">+7d</button>
+          </div>
+        </div>
+
+        <div class="control-group checkboxes-col">
+          <label class="chk-label">
+            <input type="checkbox" id="chkIncludeDueToday" />
+            <span>Include items due on this exact date</span>
+          </label>
+          <label class="chk-label">
+            <input type="checkbox" id="chkExcludeOnHold" checked />
+            <span>Skip "On Hold" items</span>
+          </label>
+        </div>
+
+        <div class="control-group">
+          <label for="filterDpm">Filter DPM:</label>
+          <select id="filterDpm"><option value="">All DPMs</option></select>
+        </div>
+
+        <div class="control-group">
+          <label for="filterPs">Filter PS:</label>
+          <select id="filterPs"><option value="">All PSs</option></select>
+        </div>
+
+        <div class="control-group grow">
+          <label for="filterSearch">Search QKEY / Job:</label>
+          <input type="text" id="filterSearch" placeholder="e.g. 22834, OHT, Akash..." />
+        </div>
+      </div>
+
+      <!-- Sub-view Toggle & Bulk Send -->
+      <div class="subview-header">
+        <div class="segmented">
+          <button class="seg-btn active" data-subview="packets">Email Queue by Recipient</button>
+          <button class="seg-btn" data-subview="overdue-table">Overdue Items Table</button>
+          <button class="seg-btn" data-subview="all-table">All Unreleased Detailing Items</button>
+        </div>
+        <div class="bulk-send-actions">
+          <span class="mode-indicator" id="activeDeliveryBadge">Mode: Outlook Send</span>
+          <button id="btnDraftAll" class="btn btn-outline" title="Create ready-to-review drafts in your local Outlook Drafts folder">
+            Save All to Outlook Drafts
+          </button>
+          <button id="btnSendAll" class="btn btn-danger">
+            &#x2709; Send All Overdue Emails
+          </button>
+        </div>
+      </div>
+
+      <!-- Subview 1: Recipient Email Queue -->
+      <div id="subview-packets" class="subview-panel active">
+        <div id="packetsContainer" class="packets-grid"></div>
+      </div>
+
+      <!-- Subview 2 & 3: Items Table -->
+      <div id="subview-table" class="subview-panel">
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr id="itemsTableHeadRow">
+                <th>QKEY</th>
+                <th>Job # &amp; Site</th>
+                <th>Category / Sub Category</th>
+                <th>DPM / PS</th>
+                <th>Field Dims (FM)<br><small>DPM + PS</small></th>
+                <th>DWG Complete<br><small>DPM</small></th>
+                <th>Engineer Calcs<br><small>DPM</small></th>
+                <th>Approval Subm.<br><small>DPM</small></th>
+                <th>Release to Shop<br><small>DPM</small></th>
+                <th>PS Request<br><small>DPM + PS</small></th>
+                <th>Scoville</th>
+              </tr>
+            </thead>
+            <tbody id="itemsTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: TEAM DIRECTORY -->
+    <section id="tab-directory" class="tab-panel">
+      <div class="panel-card">
+        <div class="panel-header">
+          <div>
+            <h2>Team Email Directory (DPM &amp; PS)</h2>
+            <p class="muted">
+              Scoville only stores first names. All discovered DPMs and PSs default to <strong>akanday@qiworks.com</strong> right now — update individual emails below whenever you're ready and click <strong>Save Directory</strong>.
+            </p>
+          </div>
+          <div class="inline-row">
+            <button id="btnSetAllDefaultEmail" class="btn btn-outline">Reset All to Default Email</button>
+            <button id="btnSaveDirectory" class="btn btn-primary">Save Directory Changes</button>
+          </div>
+        </div>
+
+        <div class="add-person-bar">
+          <input type="text" id="newPersonName" placeholder="Add Name (exact match in Scoville)" />
+          <input type="email" id="newPersonEmail" placeholder="person@qiworks.com" />
+          <label class="chk-label"><input type="checkbox" id="newPersonDpm" checked /> DPM</label>
+          <label class="chk-label"><input type="checkbox" id="newPersonPs" /> PS</label>
+          <button id="btnAddPerson" class="btn btn-outline">+ Add Person</button>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Scoville Name</th>
+                <th>Roles Seen in Scoville</th>
+                <th>Notification Rule</th>
+                <th>Email Address</th>
+                <th>Receive Alerts</th>
+              </tr>
+            </thead>
+            <tbody id="directoryTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: EMAIL LOGS -->
+    <section id="tab-logs" class="tab-panel">
+      <div class="panel-card">
+        <div class="panel-header">
+          <div>
+            <h2>Sent, Draft &amp; Test Email History</h2>
+            <p class="muted">Audit trail of every overdue alert sent, drafted in Outlook, or previewed.</p>
+          </div>
+          <div class="inline-row">
+            <button id="btnClearErrorLogs" class="btn btn-outline">Clear Failed Logs</button>
+            <button id="btnClearAllLogs" class="btn btn-danger">Clear All History</button>
+            <button id="btnRefreshLogs" class="btn btn-outline">Refresh Logs</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Recipient</th>
+                <th>To</th>
+                <th>From</th>
+                <th>Subject</th>
+                <th>Items (QKEYs)</th>
+                <th>Method / Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="logsTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: SETTINGS -->
+    <section id="tab-settings" class="tab-panel">
+      <div class="settings-grid">
+        <div class="panel-card">
+          <h3>Email Sender &amp; Delivery Method</h3>
+          <p class="muted">Automatically sends from whichever Microsoft Outlook account is signed in on this computer.</p>
+
+          <div class="form-row">
+            <label>Optional Override "From" Email (leave blank to use signed-in Local Outlook)</label>
+            <input type="email" id="setFromEmail" placeholder="Leave blank — uses local signed-in Outlook account" />
+          </div>
+          <div class="form-row">
+            <label>From Display Name</label>
+            <input type="text" id="setFromName" value="Scoville Detailing Alerts" />
+          </div>
+          <div class="form-row">
+            <label>Email Subject</label>
+            <input type="text" id="setEmailSubject" value="Overdues on Scoville" />
+          </div>
+          <div class="form-row">
+            <label>Default / Fallback Recipient Email (for new DPM/PS names)</label>
+            <input type="email" id="setDefaultEmail" value="akanday@qiworks.com" />
+          </div>
+          <div class="form-row">
+            <label>Optional CC Emails (comma-separated)</label>
+            <input type="text" id="setCcEmails" placeholder="e.g. manager@qiworks.com" />
+          </div>
+          <div class="form-row">
+            <label>Email Grouping</label>
+            <select id="setGroupingMode">
+              <option value="digest">One Combined Digest Email per Person (Recommended)</option>
+              <option value="per_item">Separate Email per Overdue QKEY Item</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label>Primary Delivery Method</label>
+            <select id="setDeliveryMode">
+              <option value="outlook_send">Local Microsoft Outlook Desktop — Send Immediately</option>
+              <option value="outlook_draft">Local Microsoft Outlook Desktop — Save to Drafts Folder</option>
+              <option value="smtp">SMTP Server (Microsoft 365 / Exchange Relay)</option>
+              <option value="dry_run">Dry-Run / Log Only (Safe Testing Mode)</option>
+            </select>
+          </div>
+          <div class="form-row" id="outlookOptionsBox">
+            <label class="chk-label">
+              <input type="checkbox" id="setOutlookBehalf" />
+              <span>Override sender using "From" email above (leave unchecked to always send from signed-in Local Outlook)</span>
+            </label>
+            <small class="hint">When unchecked (recommended), emails automatically send from whichever local Outlook account is logged in on this computer.</small>
+          </div>
+
+          <div id="smtpOptionsBox" class="smtp-box">
+            <h4>SMTP Server Configuration</h4>
+            <div class="two-col">
+              <div class="form-row">
+                <label>SMTP Host</label>
+                <input type="text" id="setSmtpHost" placeholder="smtp.office365.com" />
+              </div>
+              <div class="form-row">
+                <label>SMTP Port</label>
+                <input type="number" id="setSmtpPort" value="587" />
+              </div>
+            </div>
+            <div class="two-col">
+              <label class="chk-label"><input type="checkbox" id="setSmtpTls" checked /> Use STARTTLS (Port 587)</label>
+              <label class="chk-label"><input type="checkbox" id="setSmtpSsl" /> Use SSL (Port 465)</label>
+            </div>
+            <div class="two-col">
+              <div class="form-row">
+                <label>SMTP Username</label>
+                <input type="text" id="setSmtpUser" placeholder="detailing@qiworks.com" />
+              </div>
+              <div class="form-row">
+                <label>SMTP Password / App Password</label>
+                <input type="password" id="setSmtpPass" placeholder="Leave blank for unauthenticated relay" />
+              </div>
+            </div>
+          </div>
+
+          <hr class="sep" />
+          <div class="test-send-box">
+            <div>
+              <strong>Test Email Delivery Now</strong>
+              <p class="muted small">Sends a sample "Overdues on Scoville" email (using QKEY 22834) to verify your setup.</p>
+            </div>
+            <div class="inline-row">
+              <input type="email" id="testEmailTarget" value="akanday@qiworks.com" />
+              <button type="button" id="btnSendSampleTest" class="btn btn-outline">Send Sample Test</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-right-col">
+          <div class="panel-card">
+            <h3>Automatic Daily Schedule</h3>
+            <p class="muted">Automatically sync Scoville and send overdue alerts once per day.</p>
+            <div class="form-row">
+              <label class="chk-label">
+                <input type="checkbox" id="setScheduleEnabled" />
+                <span><strong>Enable Automatic Daily Overdue Emails</strong></span>
+              </label>
+            </div>
+            <div class="two-col">
+              <div class="form-row">
+                <label>Daily Send Time (24h Local)</label>
+                <input type="time" id="setScheduleTime" value="08:00" />
+              </div>
+              <div class="form-row" style="justify-content:flex-end;">
+                <label class="chk-label">
+                  <input type="checkbox" id="setWeekdaysOnly" checked />
+                  <span>Weekdays Only (Mon–Fri)</span>
+                </label>
+              </div>
+            </div>
+            <p class="hint" id="lastAutoRunHint">Last automatic run: Never</p>
+          </div>
+
+          <div class="panel-card">
+            <h3>Scoville Connection</h3>
+            <p class="muted">Read-only sync credentials for Scoville (`http://scoville:7555`).</p>
+            <div class="form-row">
+              <label>Scoville Base URL</label>
+              <input type="url" id="setScovilleUrl" value="http://scoville:7555" />
+            </div>
+            <div class="form-row">
+              <label>Scoville Login Email</label>
+              <input type="email" id="setScovilleEmail" value="akanday@qiworks.com" />
+            </div>
+            <div class="form-row">
+              <label>Scoville Password</label>
+              <input type="password" id="setScovillePassword" />
+            </div>
+          </div>
+
+          <div class="save-bar">
+            <button id="btnSaveSettings" class="btn btn-primary btn-lg">Save All Settings</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- EMAIL PREVIEW MODAL -->
+  <div id="previewModal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div>
+          <h3 id="modalTitle">Email Preview</h3>
+          <div class="modal-meta" id="modalMeta"></div>
+        </div>
+        <div class="inline-row">
+          <button id="modalBtnDraft" class="btn btn-outline">Save to Outlook Drafts</button>
+          <button id="modalBtnSend" class="btn btn-danger">&#x2709; Send This Email</button>
+          <button id="modalBtnClose" class="btn btn-ghost">&#x2715;</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <iframe id="previewIframe" title="Email HTML Preview"></iframe>
+      </div>
     </div>
   </div>
+
+  <script src="./static/app.js?v=6"></script>
 </body>
 </html>

@@ -22,6 +22,27 @@ app = Flask(__name__)
 _sync_lock = threading.Lock()
 
 
+@app.before_request
+def _handle_cors_preflight():
+    if request.method == "OPTIONS":
+        resp = app.make_default_options_response()
+        resp.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Access-Control-Allow-Private-Network"] = "true"
+        return resp
+    return None
+
+
+@app.after_request
+def _add_cors_headers(resp):
+    resp.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Allow-Private-Network"] = "true"
+    return resp
+
+
 def perform_scoville_sync() -> tuple[str, dict, list[dict]]:
     """Synchronizes items & $0 items from Scoville and updates discovered DPM/PS names."""
     with _sync_lock:

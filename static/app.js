@@ -1,3 +1,12 @@
+const API_BASE =
+  window.location.protocol === "https:" || window.location.hostname.endsWith("github.io")
+    ? "http://127.0.0.1:5055"
+    : "";
+
+function apiFetch(path, opts) {
+  return fetch(`${API_BASE}${path}`, opts);
+}
+
 const state = {
   today: "",
   syncedAt: null,
@@ -81,7 +90,7 @@ async function loadState(preserveDate = false) {
       });
       url += `?${qs.toString()}`;
     }
-    const res = await fetch(url);
+    const res = await apiFetch(url);
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "Failed to load state");
 
@@ -114,7 +123,21 @@ async function loadState(preserveDate = false) {
     renderAll();
   } catch (err) {
     dot.className = "dot error";
-    toast(err.message, "err");
+    document.getElementById("lastSyncText").textContent = "Local Scoville service offline";
+    document.getElementById("packetsContainer").innerHTML = `
+      <div class="empty-state">
+        <h3>Local Scoville &amp; Outlook Service Not Running on This PC</h3>
+        <p>
+          To sync private QIWorks Scoville data (<code>http://scoville:7555</code>) and send from your local Outlook,
+          double-click <strong><code>run_silent.vbs</code></strong> (or <strong><code>start.bat</code></strong>) in your <code>Scoville-Overdue-Alerts</code> folder, then click <strong>Retry Connection</strong>.
+        </p>
+        <div class="inline-row" style="justify-content:center;">
+          <button type="button" class="btn btn-primary" onclick="loadState(false)">Retry Connection</button>
+          <a class="btn btn-outline" href="http://127.0.0.1:5055/">Open Local URL (127.0.0.1:5055)</a>
+        </div>
+      </div>
+    `;
+    toast("Start run_silent.vbs / start.bat on this PC to connect to Scoville.", "err");
   }
 }
 
@@ -127,7 +150,7 @@ async function triggerScovilleSync() {
   document.getElementById("lastSyncText").textContent = "Syncing live from Scoville...";
 
   try {
-    const res = await fetch("/api/sync", {
+    const res = await apiFetch("/api/sync", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(currentEvalParams()),
@@ -659,7 +682,7 @@ function renderLogs() {
 
 async function deleteSingleLog(logId) {
   try {
-    const res = await fetch(`/api/logs/${logId}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/logs/${logId}`, { method: "DELETE" });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "Failed deleting log");
     state.logs = data.logs || [];
@@ -677,7 +700,7 @@ async function clearLogs(scope) {
       : "Clear ALL email history logs?";
   if (!confirm(msg)) return;
   try {
-    const res = await fetch(`/api/logs?scope=${encodeURIComponent(scope)}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/logs?scope=${encodeURIComponent(scope)}`, { method: "DELETE" });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "Failed clearing logs");
     state.logs = data.logs || [];
@@ -730,7 +753,7 @@ function toggleDeliveryBoxes() {
 
 async function openPreviewModal(packetId) {
   try {
-    const res = await fetch("/api/preview", {
+    const res = await apiFetch("/api/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ packet_id: packetId, ...currentEvalParams() }),
@@ -758,7 +781,7 @@ async function openPreviewModal(packetId) {
 
 async function viewLogHtml(logId) {
   try {
-    const res = await fetch(`/api/logs/${logId}`);
+    const res = await apiFetch(`/api/logs/${logId}`);
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "Could not load log");
 
@@ -782,7 +805,7 @@ async function viewLogHtml(logId) {
 
 async function sendPackets(packetIds, overrideMode = null) {
   try {
-    const res = await fetch("/api/send", {
+    const res = await apiFetch("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -832,7 +855,7 @@ async function saveDirectory() {
   });
 
   try {
-    const res = await fetch("/api/directory", {
+    const res = await apiFetch("/api/directory", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ entries: updated }),
@@ -871,7 +894,7 @@ async function saveSettings() {
   };
 
   try {
-    const res = await fetch("/api/settings", {
+    const res = await apiFetch("/api/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -993,7 +1016,7 @@ document.addEventListener("DOMContentLoaded", () => {
     btn.disabled = true;
     btn.textContent = "Sending...";
     try {
-      const res = await fetch("/api/send-test", {
+      const res = await apiFetch("/api/send-test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ to_email }),
