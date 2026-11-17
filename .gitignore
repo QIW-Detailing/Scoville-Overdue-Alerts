@@ -1,0 +1,14 @@
+# Python bytecode & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Local SQLite database & runtime secrets
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+.env
