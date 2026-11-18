@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 import threading
 import time
 from datetime import date, datetime
-from flask import Flask, jsonify, render_template, request
+from email.message import EmailMessage
+from flask import Flask, Response, jsonify, render_template, request
 
 import db
 from mailer import (
@@ -508,6 +510,66 @@ def _scheduler_loop() -> None:
         time.sleep(30)
 
 
+@app.route("/api/eml", methods=["POST"])
+def api_eml():
+    """Returns an RFC-822 .eml message with X-Unsent: 1 so any remote PC opens it in its own local Outlook."""
+    payload = request.get_json(silent=True) or {}
+    packet_id = payload.get("packet_id")
+    as_of = payload.get("as_of") or None
+    inc_today = payload.get("include_due_today")
+    exc_hold = payload.get("exclude_on_hold")
+    ms_filter = payload.get("milestone") or None
+
+    _, evaluation, _, settings, _ = _build_current_evaluation(
+        as_of=as_of,
+        include_due_today=inc_today,
+        exclude_on_hold=exc_hold,
+        milestone_filter=ms_filter,
+        auto_sync_if_empty=False,
+    )
+    packet = next((p for p in evaluation["packets"] if p["packet_id"] == packet_id), None)
+    if not packet:
+        return jsonify({"ok": False, "error": "Packet not found for current filters."}), 404
+
+    subj = (
+        settings.get("zero_value_subject", "$0 Items on Scoville")
+        if packet.get("packet_kind") == "zero_value"
+        else settings.get("email_subject", "Overdues on Scoville")
+    )
+    cc_emails = _parse_email_list(settings.get("cc_emails", ""))
+    html_body, plain_text = render_packet_email(packet, settings, evaluation["as_of_display"])
+
+    msg = EmailMessage()
+    msg["X-Unsent"] = "1"
+    msg["Subject"] = subj
+    msg["To"] = ", ".join(packet["to_emails"])
+    if cc_emails:
+        msg["Cc"] = ", ".join(cc_emails)
+    msg.set_content(plain_text)
+    msg.add_alternative(html_body, subtype="html")
+
+    db.add_email_log(
+        recipient_label=packet["recipient_name"],
+        to_emails=packet["to_emails"],
+        cc_emails=cc_emails,
+        from_email="Client PC Local Outlook (.eml)",
+        subject=subj,
+        delivery_mode="client_outlook_eml",
+        status="draft_saved",
+        item_count=packet["item_count"],
+        qkeys=packet["qkeys"],
+        html_body=html_body,
+    )
+
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", packet.get("person_name") or "Recipient")
+    filename = f"Scoville_{safe_name}.eml"
+    return Response(
+        msg.as_bytes(),
+        mimetype="message/rfc822",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def start_background_scheduler() -> None:
     t = threading.Thread(target=_scheduler_loop, daemon=True, name="ScovilleAutoMailer")
     t.start()
@@ -516,4 +578,4 @@ def start_background_scheduler() -> None:
 if __name__ == "__main__":
     db.init_db()
     start_background_scheduler()
-    app.run(host="127.0.0.1", port=5055, debug=False)
+    app.run(host="0.0.0.0", port=5055, debug=False, threaded=True)

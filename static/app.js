@@ -1,7 +1,11 @@
-const API_BASE =
-  window.location.protocol === "https:" || window.location.hostname.endsWith("github.io")
-    ? "http://127.0.0.1:5055"
-    : "";
+const IS_GITHUB_PAGES =
+  window.location.protocol === "https:" || window.location.hostname.endsWith("github.io");
+const IS_REMOTE_CLIENT =
+  !IS_GITHUB_PAGES && !["127.0.0.1", "localhost", ""].includes(window.location.hostname);
+const OFFICE_HOST_URL = "http://qiw-detgb650-ak:5055/";
+const OFFICE_IP_URL = "http://192.168.0.58:5055/";
+
+const API_BASE = IS_GITHUB_PAGES ? "http://127.0.0.1:5055" : "";
 
 function apiFetch(path, opts) {
   return fetch(`${API_BASE}${path}`, opts);
@@ -122,22 +126,31 @@ async function loadState(preserveDate = false) {
 
     renderAll();
   } catch (err) {
-    dot.className = "dot error";
-    document.getElementById("lastSyncText").textContent = "Local Scoville service offline";
-    document.getElementById("packetsContainer").innerHTML = `
-      <div class="empty-state">
-        <h3>Local Scoville &amp; Outlook Service Not Running on This PC</h3>
-        <p>
-          To sync private QIWorks Scoville data (<code>http://scoville:7555</code>) and send from your local Outlook,
-          double-click <strong><code>run_silent.vbs</code></strong> (or <strong><code>start.bat</code></strong>) in your <code>Scoville-Overdue-Alerts</code> folder, then click <strong>Retry Connection</strong>.
-        </p>
-        <div class="inline-row" style="justify-content:center;">
-          <button type="button" class="btn btn-primary" onclick="loadState(false)">Retry Connection</button>
-          <a class="btn btn-outline" href="http://127.0.0.1:5055/">Open Local URL (127.0.0.1:5055)</a>
+    if (IS_GITHUB_PAGES) {
+      // On another QIWorks computer where 127.0.0.1:5055 isn't running:
+      // automatically redirect to the shared office server on QIW-DETGB650-AK!
+      document.getElementById("lastSyncText").textContent = "Connecting to QIWorks office server...";
+      document.getElementById("packetsContainer").innerHTML = `
+        <div class="empty-state">
+          <h3>Connecting to QIWorks Office Server (<code>qiw-detgb650-ak:5055</code>)...</h3>
+          <p>
+            Redirecting your browser to the live Scoville Overdue Alerts server on the QIWorks office network.
+            If it doesn't open automatically within 2 seconds, click one of the links below:
+          </p>
+          <div class="inline-row" style="justify-content:center;">
+            <a class="btn btn-primary" href="${OFFICE_HOST_URL}">Open via Office Hostname (qiw-detgb650-ak:5055)</a>
+            <a class="btn btn-outline" href="${OFFICE_IP_URL}">Open via Office IP (192.168.0.58:5055)</a>
+          </div>
         </div>
-      </div>
-    `;
-    toast("Start run_silent.vbs / start.bat on this PC to connect to Scoville.", "err");
+      `;
+      setTimeout(() => {
+        window.location.replace(OFFICE_HOST_URL);
+      }, 250);
+      return;
+    }
+    dot.className = "dot error";
+    document.getElementById("lastSyncText").textContent = "Scoville service offline";
+    toast(err.message || "Connection error", "err");
   }
 }
 
@@ -437,7 +450,11 @@ function renderPackets() {
           <div class="packet-items-list">${itemsHtml}</div>
           <div class="packet-actions">
             <button class="btn btn-xs btn-outline" data-preview="${esc(pkt.packet_id)}">Preview Email</button>
-            <button class="btn btn-xs btn-outline" data-draft="${esc(pkt.packet_id)}">Save Outlook Draft</button>
+            ${
+              IS_REMOTE_CLIENT
+                ? `<button class="btn btn-xs btn-outline" data-eml="${esc(pkt.packet_id)}" title="Download & open formatted email in THIS computer's own local Outlook">Open in My Outlook</button>`
+                : `<button class="btn btn-xs btn-outline" data-draft="${esc(pkt.packet_id)}">Save Outlook Draft</button>`
+            }
             <button class="btn btn-xs ${isZeroPkt ? "btn-primary" : "btn-danger"}" data-send="${esc(pkt.packet_id)}">&#x2709; Send Email</button>
           </div>
         </div>
@@ -451,9 +468,38 @@ function renderPackets() {
   container.querySelectorAll("[data-draft]").forEach((b) =>
     b.addEventListener("click", () => sendPackets([b.getAttribute("data-draft")], "outlook_draft"))
   );
+  container.querySelectorAll("[data-eml]").forEach((b) =>
+    b.addEventListener("click", () => downloadEml(b.getAttribute("data-eml")))
+  );
   container.querySelectorAll("[data-send]").forEach((b) =>
     b.addEventListener("click", () => sendPackets([b.getAttribute("data-send")], null))
   );
+}
+
+async function downloadEml(packetId) {
+  try {
+    const res = await apiFetch("/api/eml", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ packet_id: packetId, ...currentEvalParams() }),
+    });
+    if (!res.ok) throw new Error("Failed generating .eml file");
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="([^"]+)"/);
+    const filename = m ? m[1] : "Scoville_Overdue.eml";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast("Downloaded .eml — double-click it to open in this computer's Outlook!", "ok");
+  } catch (err) {
+    toast(err.message, "err");
+  }
 }
 
 function renderMilestoneBadge(m) {
