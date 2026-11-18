@@ -165,13 +165,14 @@ async function loadState(preserveDate = false) {
       url += `?${qs.toString()}`;
     }
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), IS_GITHUB_PAGES ? 1800 : 15000);
+    const timer = setTimeout(() => ctrl.abort(), IS_GITHUB_PAGES ? 2500 : 30000);
     const res = await apiFetch(url, { signal: ctrl.signal });
     clearTimeout(timer);
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "Failed to load state");
 
     state.staticMode = false;
+    state.needsCredentials = Boolean(data.needs_credentials);
     const dlBtn = document.getElementById("btnDownloadHelper");
     if (dlBtn) dlBtn.style.display = "none";
 
@@ -190,7 +191,7 @@ async function loadState(preserveDate = false) {
       document.getElementById("chkExcludeOnHold").checked = Boolean(state.evaluation.exclude_on_hold);
     }
 
-    if (data.needs_credentials && !state.syncedAt) {
+    if (data.needs_credentials && !preserveDate) {
       dot.className = "dot syncing";
       document.getElementById("lastSyncText").textContent = "Enter Scoville login in Settings";
       renderAll();
@@ -198,6 +199,10 @@ async function loadState(preserveDate = false) {
       document.getElementById("setScovilleEmail")?.focus();
       toast("Welcome! Enter your Scoville email & password below and click Save All Settings.", "info");
       return;
+    }
+
+    if (!preserveDate && window.location.hash === "#settings") {
+      document.querySelector('.tab-btn[data-tab="settings"]')?.click();
     }
 
     if (data.sync_error) {
@@ -229,12 +234,12 @@ async function loadState(preserveDate = false) {
 
 async function triggerScovilleSync() {
   if (state.staticMode) {
-    // Re-check if the user just launched ScovilleOverdueAlerts.exe on their PC!
+    // Re-check if the user just launched Setup-This-PC.bat / Scoville Overdue Alerts shortcut on their PC!
     state.staticMode = false;
     await loadState(true);
     if (state.staticMode) {
       toast(
-        "To sync live directly from Scoville on your PC, click 'Download PC Helper (.exe)' in the top bar and run it once!",
+        "Local helper (127.0.0.1:5055) is not running yet. Extract the .zip, double-click Setup-This-PC.bat, or open http://127.0.0.1:5055 directly!",
         "info"
       );
     } else {
@@ -1072,7 +1077,19 @@ async function saveDirectory() {
   }
 }
 
+function friendlyFetchError(err) {
+  const msg = String(err?.message || err || "");
+  if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+    if (IS_GITHUB_PAGES) {
+      return "Local PC Helper (127.0.0.1:5055) is not running or blocked by HTTPS. Extract the .zip, double-click Setup-This-PC.bat, and open http://127.0.0.1:5055 directly!";
+    }
+    return "Local helper service stopped responding on 127.0.0.1:5055. Double-click your 'Scoville Overdue Alerts' Desktop shortcut (or Setup-This-PC.bat) and try again.";
+  }
+  return msg || "Unexpected error";
+}
+
 async function saveSettings() {
+  const wasMissingCreds = Boolean(state.needsCredentials);
   const payload = {
     from_email: document.getElementById("setFromEmail").value.trim(),
     from_name: document.getElementById("setFromName").value.trim(),
@@ -1096,6 +1113,12 @@ async function saveSettings() {
     scoville_password: document.getElementById("setScovillePassword").value,
   };
 
+  const btn = document.getElementById("btnSaveSettings");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+  }
+
   try {
     const res = await apiFetch("/api/settings", {
       method: "PUT",
@@ -1104,10 +1127,20 @@ async function saveSettings() {
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "Could not save settings");
+    state.staticMode = false;
     toast("Settings saved!", "ok");
     await loadState(true);
+    if (wasMissingCreds && payload.scoville_email && payload.scoville_password) {
+      document.querySelector('.tab-btn[data-tab="dashboard"]')?.click();
+      await triggerScovilleSync();
+    }
   } catch (err) {
-    toast(err.message, "err");
+    toast(friendlyFetchError(err), "err");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Save All Settings";
+    }
   }
 }
 

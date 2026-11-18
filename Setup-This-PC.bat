@@ -1,29 +1,23 @@
 @echo off
 cd /d "%~dp0"
-echo ========================================================
-echo   Scoville Overdue Alerts — One-Time Colleague PC Setup
-echo ========================================================
-echo.
 
-where python >nul 2>nul
-if %ERRORLEVEL% neq 0 (
-    echo Python not found on this PC. Installing official Python 3.12 via winget...
-    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
+if not exist "%~dp0app.py" (
+    echo ====================================================================
+    echo   IMPORTANT: EXTRACT THE .ZIP FOLDER FIRST!
+    echo ====================================================================
+    echo It looks like you double-clicked Setup-This-PC.bat directly inside
+    echo the compressed .zip preview window without extracting the files.
     echo.
-    echo Please close this window and double-click Setup-This-PC.bat once more to finish!
+    echo 1. Right-click the downloaded .zip file and click "Extract All..."
+    echo 2. Open the extracted folder and double-click Setup-This-PC.bat
+    echo ====================================================================
+    echo.
     pause
-    exit /b 0
+    exit /b 1
 )
 
-echo Installing required packages (Flask, requests)...
-python -m pip install --quiet -r requirements.txt
-
-echo Creating Desktop shortcut...
-powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\Scoville Overdue Alerts.lnk'); $s.TargetPath = '%~dp0run_silent.vbs'; $s.WorkingDirectory = '%~dp0'; $s.Save()"
-
-echo Starting Scoville Overdue Alerts in background...
-wscript "%~dp0run_silent.vbs"
-echo.
-echo Done! Scoville Overdue Alerts is opening in your browser (http://127.0.0.1:5055).
-echo Enter your Scoville email and password on the Settings tab and click Save!
-timeout /t 4
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup_helper.ps1"
+if %ERRORLEVEL% neq 0 (
+    echo.
+    pause
+)

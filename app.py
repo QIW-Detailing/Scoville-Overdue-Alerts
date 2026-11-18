@@ -79,8 +79,9 @@ def _handle_cors_preflight():
         resp = app.make_default_options_response()
         resp.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Accept"
         resp.headers["Access-Control-Allow-Private-Network"] = "true"
+        resp.headers["Access-Control-Allow-Local-Network"] = "true"
         return resp
     return None
 
@@ -89,9 +90,15 @@ def _handle_cors_preflight():
 def _add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Accept"
     resp.headers["Access-Control-Allow-Private-Network"] = "true"
+    resp.headers["Access-Control-Allow-Local-Network"] = "true"
     return resp
+
+
+@app.route("/api/ping", methods=["GET"])
+def api_ping():
+    return jsonify({"ok": True})
 
 
 def perform_scoville_sync() -> tuple[str, dict, list[dict]]:
@@ -132,7 +139,7 @@ def _build_current_evaluation(
     include_due_today: bool | None = None,
     exclude_on_hold: bool | None = None,
     milestone_filter: str | None = None,
-    auto_sync_if_empty: bool = True,
+    auto_sync_if_empty: bool = False,
 ) -> tuple[str | None, dict, list[dict], dict, str | None]:
     settings = db.get_settings()
     synced_at, cache_payload = db.get_sync_cache()
@@ -141,17 +148,27 @@ def _build_current_evaluation(
     zero_scanned = int(cache_payload.get("zero_value_scanned") or 0)
     sync_error = None
 
+    # On a fresh colleague PC install, warm-seed cache from bundled snapshot.json so UI loads instantly
+    if not raw_items:
+        snap_path = os.path.join(RESOURCE_DIR, "snapshot.json")
+        if os.path.isfile(snap_path):
+            try:
+                with open(snap_path, "r", encoding="utf-8") as f:
+                    snap_data = json.load(f)
+                if snap_data.get("items"):
+                    raw_items = snap_data.get("items") or []
+                    zero_items = snap_data.get("zero_value_items") or []
+                    zero_scanned = int(snap_data.get("zero_value_scanned") or 0)
+                    synced_at = snap_data.get("synced_at")
+            except Exception:
+                pass
+
     has_creds = bool(
         (settings.get("scoville_email") or "").strip()
         and (settings.get("scoville_password") or "").strip()
     )
 
-    needs_schema_resync = bool(
-        zero_items is None
-        or (raw_items and "ps_request" not in (raw_items[0].get("milestones") or {}))
-    )
-
-    if (not raw_items or needs_schema_resync) and auto_sync_if_empty and has_creds:
+    if not raw_items and auto_sync_if_empty and has_creds:
         try:
             synced_at, cache_payload, directory = perform_scoville_sync()
             raw_items = cache_payload.get("items") or []
@@ -194,7 +211,7 @@ def api_state():
         include_due_today=inc_today,
         exclude_on_hold=exc_hold,
         milestone_filter=ms_filter,
-        auto_sync_if_empty=True,
+        auto_sync_if_empty=False,
     )
     needs_creds = not bool(
         (settings.get("scoville_email") or "").strip()
