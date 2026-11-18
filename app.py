@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -51,6 +52,23 @@ def write_public_snapshot(synced_at: str | None, cache_payload: dict, directory:
         }
         with open(snap_path, "w", encoding="utf-8") as f:
             json.dump(snap_data, f)
+
+        def _bg_push_snapshot() -> None:
+            try:
+                if not os.path.isdir(os.path.join(RESOURCE_DIR, ".git")):
+                    return
+                subprocess.run(["git", "add", "snapshot.json"], cwd=RESOURCE_DIR, capture_output=True, timeout=10)
+                subprocess.run(
+                    ["git", "commit", "-m", f"Auto-sync snapshot ({synced_at})"],
+                    cwd=RESOURCE_DIR,
+                    capture_output=True,
+                    timeout=10,
+                )
+                subprocess.run(["git", "push", "origin", "main"], cwd=RESOURCE_DIR, capture_output=True, timeout=20)
+            except Exception:
+                pass
+
+        threading.Thread(target=_bg_push_snapshot, daemon=True).start()
     except Exception:
         pass
 
