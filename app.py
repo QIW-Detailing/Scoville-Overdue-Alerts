@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import sys
 import threading
 import time
+import webbrowser
 from datetime import date, datetime
 from email.message import EmailMessage
 from flask import Flask, Response, jsonify, render_template, request
@@ -20,8 +24,35 @@ from scoville_client import (
     fetch_scoville_data,
 )
 
-app = Flask(__name__)
+IS_FROZEN = getattr(sys, "frozen", False)
+RESOURCE_DIR = sys._MEIPASS if IS_FROZEN else os.path.dirname(os.path.abspath(__file__))
+
+app = Flask(
+    __name__,
+    template_folder=os.path.join(RESOURCE_DIR, "templates"),
+    static_folder=os.path.join(RESOURCE_DIR, "static"),
+)
 _sync_lock = threading.Lock()
+
+
+def write_public_snapshot(synced_at: str | None, cache_payload: dict, directory: list[dict]) -> None:
+    """Writes a password-free snapshot.json when running from the repo folder."""
+    if IS_FROZEN or not synced_at:
+        return
+    try:
+        snap_path = os.path.join(RESOURCE_DIR, "snapshot.json")
+        snap_data = {
+            "synced_at": synced_at,
+            "milestones": TRACKED_MILESTONES,
+            "items": cache_payload.get("items") or [],
+            "zero_value_items": cache_payload.get("zero_value_items") or [],
+            "zero_value_scanned": int(cache_payload.get("zero_value_scanned") or 0),
+            "directory": directory,
+        }
+        with open(snap_path, "w", encoding="utf-8") as f:
+            json.dump(snap_data, f)
+    except Exception:
+        pass
 
 
 @app.before_request
@@ -68,6 +99,7 @@ def perform_scoville_sync() -> tuple[str, dict, list[dict]]:
             default_email=settings.get("default_recipient_email", "akanday@qiworks.com"),
         )
         synced_at = db.save_sync_cache(cache_payload)
+        write_public_snapshot(synced_at, cache_payload, directory)
         return synced_at, cache_payload, directory
 
 
@@ -91,12 +123,17 @@ def _build_current_evaluation(
     zero_scanned = int(cache_payload.get("zero_value_scanned") or 0)
     sync_error = None
 
+    has_creds = bool(
+        (settings.get("scoville_email") or "").strip()
+        and (settings.get("scoville_password") or "").strip()
+    )
+
     needs_schema_resync = bool(
         zero_items is None
         or (raw_items and "ps_request" not in (raw_items[0].get("milestones") or {}))
     )
 
-    if (not raw_items or needs_schema_resync) and auto_sync_if_empty:
+    if (not raw_items or needs_schema_resync) and auto_sync_if_empty and has_creds:
         try:
             synced_at, cache_payload, directory = perform_scoville_sync()
             raw_items = cache_payload.get("items") or []
@@ -141,12 +178,17 @@ def api_state():
         milestone_filter=ms_filter,
         auto_sync_if_empty=True,
     )
+    needs_creds = not bool(
+        (settings.get("scoville_email") or "").strip()
+        and (settings.get("scoville_password") or "").strip()
+    )
     return jsonify(
         {
             "ok": True,
             "today": date.today().isoformat(),
             "synced_at": synced_at,
             "sync_error": sync_error,
+            "needs_credentials": needs_creds,
             "milestones": TRACKED_MILESTONES,
             "evaluation": evaluation,
             "directory": directory,
@@ -416,6 +458,8 @@ def api_update_directory():
     entries = payload.get("entries")
     if isinstance(entries, list):
         updated = db.bulk_update_directory(entries)
+        synced_at, cache_payload = db.get_sync_cache()
+        write_public_snapshot(synced_at, cache_payload, updated)
         return jsonify({"ok": True, "directory": updated})
     return jsonify({"ok": False, "error": "Expected 'entries' array."}), 400
 
@@ -578,4 +622,6 @@ def start_background_scheduler() -> None:
 if __name__ == "__main__":
     db.init_db()
     start_background_scheduler()
-    app.run(host="0.0.0.0", port=5055, debug=False, threaded=True)
+    if IS_FROZEN:
+        threading.Timer(1.2, lambda: webbrowser.open("http://127.0.0.1:5055")).start()
+    app.run(host="127.0.0.1", port=5055, debug=False, threaded=True)

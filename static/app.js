@@ -2,23 +2,30 @@ const IS_GITHUB_PAGES =
   window.location.protocol === "https:" || window.location.hostname.endsWith("github.io");
 const IS_REMOTE_CLIENT =
   !IS_GITHUB_PAGES && !["127.0.0.1", "localhost", ""].includes(window.location.hostname);
-const OFFICE_HOST_URL = "http://qiw-detgb650-ak:5055/";
-const OFFICE_IP_URL = "http://192.168.0.58:5055/";
 
 const API_BASE = IS_GITHUB_PAGES ? "http://127.0.0.1:5055" : "";
 
-function apiFetch(path, opts) {
+function apiFetch(path, opts = {}) {
   return fetch(`${API_BASE}${path}`, opts);
 }
 
 const state = {
+  staticMode: false,
+  rawSnapshot: null,
   today: "",
   syncedAt: null,
   milestones: [],
   evaluation: null,
   directory: [],
-  settings: {},
-  effectiveSender: "Local Outlook Account",
+  settings: {
+    scoville_url: "http://scoville:7555",
+    email_subject: "Overdues on Scoville",
+    zero_value_subject: "$0 Items on Scoville",
+    default_recipient_email: "akanday@qiworks.com",
+    grouping_mode: "digest",
+    delivery_mode: "outlook_eml",
+  },
+  effectiveSender: "This PC's Local Outlook",
   logs: [],
   activeTab: "dashboard",
   activeSubview: "packets",
@@ -79,9 +86,72 @@ function currentEvalParams() {
   };
 }
 
+function localTodayIso() {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+}
+
+async function loadStaticSnapshotFallback(preserveDate = false) {
+  const dot = document.getElementById("syncStatusDot");
+  if (!state.rawSnapshot) {
+    const snapRes = await fetch(`./snapshot.json?t=${Date.now()}`);
+    if (!snapRes.ok) throw new Error("Snapshot not found");
+    state.rawSnapshot = await snapRes.json();
+  }
+
+  state.staticMode = true;
+  state.today = localTodayIso();
+  state.syncedAt = state.rawSnapshot.synced_at || null;
+  state.milestones = state.rawSnapshot.milestones || [];
+
+  let savedDir = null;
+  try {
+    savedDir = JSON.parse(localStorage.getItem("scoville_dir_override") || "null");
+  } catch (_) {}
+  state.directory = Array.isArray(savedDir) && savedDir.length ? savedDir : (state.rawSnapshot.directory || []);
+  state.effectiveSender = "This PC's Local Outlook (.eml)";
+
+  if (!preserveDate) {
+    document.getElementById("asOfDateInput").value = state.today;
+    document.getElementById("chkIncludeDueToday").checked = false;
+    document.getElementById("chkExcludeOnHold").checked = true;
+  }
+
+  state.evaluation = window.ScovilleStandalone.evaluateSnapshot(
+    state.rawSnapshot,
+    state.directory,
+    state.settings,
+    currentEvalParams()
+  );
+
+  const dlBtn = document.getElementById("btnDownloadHelper");
+  if (dlBtn) dlBtn.style.display = "inline-flex";
+
+  dot.className = "dot";
+  document.getElementById("lastSyncText").textContent = state.syncedAt
+    ? `Snapshot: ${state.syncedAt.replace("T", " ")}`
+    : "Snapshot loaded";
+
+  renderAll();
+}
+
 async function loadState(preserveDate = false) {
   const dot = document.getElementById("syncStatusDot");
   dot.className = "dot syncing";
+
+  // If already in standalone snapshot mode and merely filtering, evaluate instantly in memory!
+  if (state.staticMode && preserveDate && state.rawSnapshot) {
+    state.evaluation = window.ScovilleStandalone.evaluateSnapshot(
+      state.rawSnapshot,
+      state.directory,
+      state.settings,
+      currentEvalParams()
+    );
+    dot.className = "dot";
+    renderAll();
+    return;
+  }
+
   try {
     let url = "/api/state";
     if (preserveDate) {
@@ -94,9 +164,16 @@ async function loadState(preserveDate = false) {
       });
       url += `?${qs.toString()}`;
     }
-    const res = await apiFetch(url);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), IS_GITHUB_PAGES ? 1800 : 15000);
+    const res = await apiFetch(url, { signal: ctrl.signal });
+    clearTimeout(timer);
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "Failed to load state");
+
+    state.staticMode = false;
+    const dlBtn = document.getElementById("btnDownloadHelper");
+    if (dlBtn) dlBtn.style.display = "none";
 
     state.today = data.today;
     state.syncedAt = data.synced_at;
@@ -113,6 +190,16 @@ async function loadState(preserveDate = false) {
       document.getElementById("chkExcludeOnHold").checked = Boolean(state.evaluation.exclude_on_hold);
     }
 
+    if (data.needs_credentials && !state.syncedAt) {
+      dot.className = "dot syncing";
+      document.getElementById("lastSyncText").textContent = "Enter Scoville login in Settings";
+      renderAll();
+      document.querySelector('.tab-btn[data-tab="settings"]')?.click();
+      document.getElementById("setScovilleEmail")?.focus();
+      toast("Welcome! Enter your Scoville email & password below and click Save All Settings.", "info");
+      return;
+    }
+
     if (data.sync_error) {
       dot.className = "dot error";
       document.getElementById("lastSyncText").textContent = "Sync error — check Settings";
@@ -126,27 +213,13 @@ async function loadState(preserveDate = false) {
 
     renderAll();
   } catch (err) {
-    if (IS_GITHUB_PAGES) {
-      // On another QIWorks computer where 127.0.0.1:5055 isn't running:
-      // automatically redirect to the shared office server on QIW-DETGB650-AK!
-      document.getElementById("lastSyncText").textContent = "Connecting to QIWorks office server...";
-      document.getElementById("packetsContainer").innerHTML = `
-        <div class="empty-state">
-          <h3>Connecting to QIWorks Office Server (<code>qiw-detgb650-ak:5055</code>)...</h3>
-          <p>
-            Redirecting your browser to the live Scoville Overdue Alerts server on the QIWorks office network.
-            If it doesn't open automatically within 2 seconds, click one of the links below:
-          </p>
-          <div class="inline-row" style="justify-content:center;">
-            <a class="btn btn-primary" href="${OFFICE_HOST_URL}">Open via Office Hostname (qiw-detgb650-ak:5055)</a>
-            <a class="btn btn-outline" href="${OFFICE_IP_URL}">Open via Office IP (192.168.0.58:5055)</a>
-          </div>
-        </div>
-      `;
-      setTimeout(() => {
-        window.location.replace(OFFICE_HOST_URL);
-      }, 250);
-      return;
+    if (IS_GITHUB_PAGES && window.ScovilleStandalone) {
+      try {
+        await loadStaticSnapshotFallback(preserveDate);
+        return;
+      } catch (snapErr) {
+        // fall through
+      }
     }
     dot.className = "dot error";
     document.getElementById("lastSyncText").textContent = "Scoville service offline";
@@ -155,6 +228,22 @@ async function loadState(preserveDate = false) {
 }
 
 async function triggerScovilleSync() {
+  if (state.staticMode) {
+    // Re-check if the user just launched ScovilleOverdueAlerts.exe on their PC!
+    state.staticMode = false;
+    await loadState(true);
+    if (state.staticMode) {
+      toast(
+        "To sync live directly from Scoville on your PC, click 'Download PC Helper (.exe)' in the top bar and run it once!",
+        "info"
+      );
+    } else {
+      toast("Connected to your PC Helper! Syncing live from Scoville...", "ok");
+      await triggerScovilleSync();
+    }
+    return;
+  }
+
   const btn = document.getElementById("btnSyncNow");
   const dot = document.getElementById("syncStatusDot");
   btn.disabled = true;
@@ -451,11 +540,12 @@ function renderPackets() {
           <div class="packet-actions">
             <button class="btn btn-xs btn-outline" data-preview="${esc(pkt.packet_id)}">Preview Email</button>
             ${
-              IS_REMOTE_CLIENT
-                ? `<button class="btn btn-xs btn-outline" data-eml="${esc(pkt.packet_id)}" title="Download & open formatted email in THIS computer's own local Outlook">Open in My Outlook</button>`
-                : `<button class="btn btn-xs btn-outline" data-draft="${esc(pkt.packet_id)}">Save Outlook Draft</button>`
+              state.staticMode
+                ? `<button class="btn btn-xs ${isZeroPkt ? "btn-primary" : "btn-danger"}" data-eml="${esc(pkt.packet_id)}" title="Open ready-to-send email in THIS computer's local Microsoft Outlook">&#x2709; Open in My Outlook</button>`
+                : IS_REMOTE_CLIENT
+                ? `<button class="btn btn-xs btn-outline" data-eml="${esc(pkt.packet_id)}">Open in My Outlook</button><button class="btn btn-xs ${isZeroPkt ? "btn-primary" : "btn-danger"}" data-send="${esc(pkt.packet_id)}">&#x2709; Send Email</button>`
+                : `<button class="btn btn-xs btn-outline" data-draft="${esc(pkt.packet_id)}">Save Outlook Draft</button><button class="btn btn-xs ${isZeroPkt ? "btn-primary" : "btn-danger"}" data-send="${esc(pkt.packet_id)}">&#x2709; Send Email</button>`
             }
-            <button class="btn btn-xs ${isZeroPkt ? "btn-primary" : "btn-danger"}" data-send="${esc(pkt.packet_id)}">&#x2709; Send Email</button>
           </div>
         </div>
       `;
@@ -477,6 +567,24 @@ function renderPackets() {
 }
 
 async function downloadEml(packetId) {
+  if (state.staticMode && window.ScovilleStandalone) {
+    const pkt = (state.evaluation?.packets || []).find((p) => p.packet_id === packetId);
+    if (!pkt) return toast("Packet not found.", "err");
+    const subj =
+      pkt.packet_kind === "zero_value"
+        ? state.settings.zero_value_subject || "$0 Items on Scoville"
+        : state.settings.email_subject || "Overdues on Scoville";
+    window.ScovilleStandalone.downloadPacketEml(
+      pkt,
+      subj,
+      state.settings.cc_emails || "",
+      state.evaluation.as_of_display
+    );
+    toast("Opened .eml download — click it to open in your PC's Outlook!", "ok");
+    document.getElementById("previewModal").classList.add("hidden");
+    return;
+  }
+
   try {
     const res = await apiFetch("/api/eml", {
       method: "POST",
@@ -496,7 +604,7 @@ async function downloadEml(packetId) {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-    toast("Downloaded .eml — double-click it to open in this computer's Outlook!", "ok");
+    toast("Downloaded .eml — click it to open in this computer's Outlook!", "ok");
   } catch (err) {
     toast(err.message, "err");
   }
@@ -798,6 +906,32 @@ function toggleDeliveryBoxes() {
 }
 
 async function openPreviewModal(packetId) {
+  if (state.staticMode && window.ScovilleStandalone) {
+    const pkt = (state.evaluation?.packets || []).find((p) => p.packet_id === packetId);
+    if (!pkt) return toast("Packet not found.", "err");
+    const subj =
+      pkt.packet_kind === "zero_value"
+        ? state.settings.zero_value_subject || "$0 Items on Scoville"
+        : state.settings.email_subject || "Overdues on Scoville";
+    const htmlBody = window.ScovilleStandalone.renderPacketEmailHtml(
+      pkt,
+      state.evaluation.as_of_display
+    );
+    state.previewPacketId = packetId;
+    document.getElementById("modalTitle").textContent = `Preview: ${subj}`;
+    document.getElementById("modalMeta").innerHTML =
+      `From: <strong>This PC's Local Outlook</strong> &nbsp;|&nbsp; ` +
+      `To: <strong>${esc(pkt.to_emails.join(", "))}</strong> &nbsp;|&nbsp; ` +
+      `Assigned: <strong>${esc(pkt.recipient_name)}</strong>`;
+    document.getElementById("modalBtnDraft").style.display = "none";
+    const sendBtn = document.getElementById("modalBtnSend");
+    sendBtn.style.display = "inline-flex";
+    sendBtn.innerHTML = "&#x2709; Open in My Outlook";
+    document.getElementById("previewIframe").srcdoc = htmlBody;
+    document.getElementById("previewModal").classList.remove("hidden");
+    return;
+  }
+
   try {
     const res = await apiFetch("/api/preview", {
       method: "POST",
@@ -814,6 +948,7 @@ async function openPreviewModal(packetId) {
       `To: <strong>${esc(data.to_emails.join(", "))}</strong> &nbsp;|&nbsp; ` +
       `Assigned: <strong>${esc(data.recipient_name)}</strong>`;
 
+    document.getElementById("modalBtnSend").innerHTML = "&#x2709; Send This Email";
     document.getElementById("modalBtnSend").style.display = "inline-flex";
     document.getElementById("modalBtnDraft").style.display = "inline-flex";
 
@@ -850,6 +985,18 @@ async function viewLogHtml(logId) {
 }
 
 async function sendPackets(packetIds, overrideMode = null) {
+  if (state.staticMode) {
+    const allPkts = state.evaluation?.packets || [];
+    const targets =
+      packetIds === "all"
+        ? allPkts
+        : allPkts.filter((p) => (packetIds || []).includes(p.packet_id));
+    targets.forEach((p, idx) => {
+      setTimeout(() => downloadEml(p.packet_id), idx * 250);
+    });
+    return;
+  }
+
   try {
     const res = await apiFetch("/api/send", {
       method: "POST",
@@ -899,6 +1046,16 @@ async function saveDirectory() {
       active: tr.querySelector(".dir-active-input").checked,
     });
   });
+
+  if (state.staticMode) {
+    state.directory = updated;
+    try {
+      localStorage.setItem("scoville_dir_override", JSON.stringify(updated));
+    } catch (_) {}
+    toast("Team directory saved in this browser!", "ok");
+    await loadState(true);
+    return;
+  }
 
   try {
     const res = await apiFetch("/api/directory", {

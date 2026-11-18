@@ -1,11 +1,38 @@
 import json
 import os
 import sqlite3
+import sys
 from datetime import datetime
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    DATA_DIR = os.path.join(
+        os.environ.get("LOCALAPPDATA") or BASE_DIR,
+        "ScovilleOverdueAlerts",
+    )
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = os.path.join(BASE_DIR, "data")
+
 DB_PATH = os.path.join(DATA_DIR, "scoville_alerts.db")
+
+SEED_DIRECTORY = [
+    ("Adelio", "ALopez@qiworks.com", 1, 0),
+    ("Akash", "akanday@qiworks.com", 1, 0),
+    ("Brenton", "blowery@qiworks.com", 0, 1),
+    ("Brian", "bmasta@qiworks.com", 1, 0),
+    ("Carlos", "CCuevas@qiworks.com", 0, 1),
+    ("Charles", "cpowell@qiworks.com", 1, 0),
+    ("Dominique", "dbaum@qiworks.com", 1, 0),
+    ("Garrett", "gbabin@qiworks.com", 1, 0),
+    ("Jared", "jleduc@qiworks.com", 0, 1),
+    ("Jerrell", "jerrelldowd@qiworks.com", 0, 1),
+    ("Kyle", "ktingle@qiworks.com", 0, 1),
+    ("Nicholas", "ngarrett@qiworks.com", 1, 0),
+    ("Polo", "pinfante@qiworks.com", 0, 1),
+    ("Randy", "rcrabtree@qiworks.com", 1, 0),
+    ("Steven", "srayas@qiworks.com", 0, 1),
+]
 
 DEFAULT_SETTINGS = {
     "scoville_url": os.environ.get("SCOVILLE_URL", "http://scoville:7555"),
@@ -88,6 +115,14 @@ def init_db() -> None:
             conn.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                 (k, json.dumps(v)),
+            )
+        # Seed known QIWorks DPM & PS directory emails on fresh installs
+        now = datetime.now().isoformat(timespec="seconds")
+        for name, email, is_dpm, is_ps in SEED_DIRECTORY:
+            conn.execute(
+                "INSERT OR IGNORE INTO directory (name, email, is_dpm, is_ps, active, updated_at) "
+                "VALUES (?, ?, ?, ?, 1, ?)",
+                (name, email, is_dpm, is_ps, now),
             )
         # One-time migration to switch existing DB from detailing@qiworks.com to local Outlook account
         mig = conn.execute("SELECT value FROM settings WHERE key = '_migrated_local_outlook'").fetchone()
