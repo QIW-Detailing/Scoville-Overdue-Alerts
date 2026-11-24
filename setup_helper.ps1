@@ -11,19 +11,22 @@ Write-Host ""
 if (-not (Test-Path (Join-Path $AppDir "app.py"))) {
     Write-Host "[ERROR] Cannot find app.py in this folder!" -ForegroundColor Red
     Write-Host "Please right-click the downloaded .zip file -> click 'Extract All...'," -ForegroundColor Yellow
-    Write-Host "and then double-click Setup-This-PC.bat inside the extracted folder." -ForegroundColor Yellow
+    Write-Host "and then double-click Setup-This-PC inside the extracted folder." -ForegroundColor Yellow
     Write-Host ""
     Read-Host "Press Enter to close"
     exit 1
 }
 
+# Remove Windows Mark-of-the-Web (Zone.Identifier) from extracted .zip files
+try {
+    Get-ChildItem -Path $AppDir -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
+} catch {}
+
 function Test-RealPython([string]$ExePath) {
     if ([string]::IsNullOrWhiteSpace($ExePath)) { return $false }
-    if ($ExePath -like "*WindowsApps*") { return $false }
-    if (-not (Test-Path $ExePath)) { return $false }
     try {
-        $ver = & $ExePath -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}' if sys.version_info >= (3,9) else 'OLD')" 2>$null
-        if ($LASTEXITCODE -eq 0 -and $ver -and $ver -ne "OLD") {
+        $out = & $ExePath -c "import sys; print('REAL_PY_OK' if sys.version_info >= (3,9) else 'OLD')" 2>$null
+        if ($LASTEXITCODE -eq 0 -and ($out -join "") -match "REAL_PY_OK") {
             return $true
         }
     } catch {}
@@ -39,7 +42,7 @@ function Find-WorkingPython {
         if ($saved) { $candidates.Add($saved) }
     }
 
-    # Check common per-user & system Python locations (newest first)
+    # Check standard per-user & system Python locations (newest first)
     $searchGlobs = @(
         "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
         "$env:ProgramFiles\Python3*\python.exe",
@@ -56,21 +59,24 @@ function Find-WorkingPython {
         if ($pyLauncher) {
             $fromPy = (& $pyLauncher.Source -3 -c "import sys; print(sys.executable)" 2>$null)
             if ($LASTEXITCODE -eq 0 -and $fromPy) {
-                $candidates.Add($fromPy.Trim())
+                $candidates.Add(($fromPy -join "").Trim())
             }
         }
     } catch {}
 
-    # Check PATH python (explicitly skipping WindowsApps Microsoft Store stub!)
+    # Check PATH python (including genuine Microsoft Store Python; fake stub fails REAL_PY_OK test)
     $pathCmds = Get-Command python.exe -All -ErrorAction SilentlyContinue
     foreach ($c in $pathCmds) {
-        if ($c.Source -and ($c.Source -notlike "*WindowsApps*")) {
-            $candidates.Add($c.Source)
-        }
+        if ($c.Source) { $candidates.Add($c.Source) }
     }
 
     foreach ($cand in $candidates) {
         if (Test-RealPython $cand) {
+            # Resolve sys.executable so we store the concrete interpreter path
+            try {
+                $realExe = (& $cand -c "import sys; print(sys.executable)" 2>$null | Select-Object -Last 1).Trim()
+                if ($realExe -and (Test-Path $realExe)) { return $realExe }
+            } catch {}
             return $cand
         }
     }
@@ -80,7 +86,7 @@ function Find-WorkingPython {
 $pyExe = Find-WorkingPython
 
 if (-not $pyExe) {
-    Write-Host "[1/4] Real Python 3 not found on this PC (ignoring Windows Store stub)." -ForegroundColor Yellow
+    Write-Host "[1/4] Python 3 not found on this PC." -ForegroundColor Yellow
     Write-Host "      Installing official Python 3.12 (per-user, no admin required)..." -ForegroundColor Cyan
 
     $wingetCmd = Get-Command winget.exe -ErrorAction SilentlyContinue
@@ -97,14 +103,14 @@ if (-not $pyExe) {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe" -OutFile $installerPath -UseBasicParsing
         Write-Host "      Running silent per-user Python installation (takes ~30 seconds)..." -ForegroundColor Cyan
-        $proc = Start-Process -FilePath $installerPath -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0" -Wait -PassThru
+        Start-Process -FilePath $installerPath -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_test=0" -Wait | Out-Null
         $pyExe = Find-WorkingPython
     }
 
     if (-not $pyExe) {
         Write-Host ""
         Write-Host "[ERROR] Could not automatically install Python 3.12 on this PC." -ForegroundColor Red
-        Write-Host "Please install Python 3.12 from https://www.python.org/downloads/ and re-run Setup-This-PC.bat." -ForegroundColor Yellow
+        Write-Host "Please install Python 3.12 from https://www.python.org/downloads/ and re-run Setup-This-PC." -ForegroundColor Yellow
         Read-Host "Press Enter to close"
         exit 1
     }
@@ -138,22 +144,23 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "[3/4] Creating Desktop & Windows Startup shortcuts..." -ForegroundColor Cyan
 try {
     $ws = New-Object -ComObject WScript.Shell
-    $vbsPath = Join-Path $AppDir "run_silent.vbs"
+    $launchPs1 = Join-Path $AppDir "launch_helper.ps1"
 
     $desktop = [Environment]::GetFolderPath("Desktop")
     $lnk = $ws.CreateShortcut((Join-Path $desktop "Scoville Overdue Alerts.lnk"))
-    $lnk.TargetPath = "wscript.exe"
-    $lnk.Arguments = "`"$vbsPath`""
+    $lnk.TargetPath = "powershell.exe"
+    $lnk.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launchPs1`""
     $lnk.WorkingDirectory = $AppDir
+    $lnk.WindowStyle = 7
     $lnk.Description = "Start Scoville Overdue Alerts local helper and open dashboard"
     $lnk.Save()
 
-    # Also register silent auto-start on Windows login so port 5055 stays ready after reboots
     $startupDir = [Environment]::GetFolderPath("Startup")
     $startupLnk = $ws.CreateShortcut((Join-Path $startupDir "Scoville Overdue Alerts Helper.lnk"))
-    $startupLnk.TargetPath = "wscript.exe"
-    $startupLnk.Arguments = "`"$vbsPath`" --no-browser"
+    $startupLnk.TargetPath = "powershell.exe"
+    $startupLnk.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launchPs1`" -NoBrowser"
     $startupLnk.WorkingDirectory = $AppDir
+    $startupLnk.WindowStyle = 7
     $startupLnk.Description = "Auto-start Scoville Overdue Alerts local helper in background"
     $startupLnk.Save()
 } catch {
@@ -170,12 +177,13 @@ try {
             Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
         }
     }
-    Start-Sleep -Milliseconds 500
+    Start-Sleep -Milliseconds 600
 } catch {}
 
-# Launch via wscript run_silent.vbs --no-browser so we verify port 5055 before opening browser
-$vbsFile = Join-Path $AppDir "run_silent.vbs"
-Start-Process -FilePath "wscript.exe" -ArgumentList "`"$vbsFile`" --no-browser" -WorkingDirectory $AppDir
+# Launch app.py directly via PowerShell Start-Process (avoids VBScript / Defender ASR blocks!)
+$outLog = Join-Path $dataDir "server.log"
+$errLog = Join-Path $dataDir "server_err.log"
+Start-Process -FilePath $pyExe -ArgumentList "`"$(Join-Path $AppDir 'app.py')`"" -WorkingDirectory $AppDir -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog
 
 $serverReady = $false
 for ($i = 0; $i -lt 30; $i++) {
@@ -192,10 +200,13 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $serverReady) {
     Write-Host ""
     Write-Host "[ERROR] Local helper did not start on port 5055." -ForegroundColor Red
-    $logFile = Join-Path $dataDir "server.log"
-    if (Test-Path $logFile) {
-        Write-Host "--- Startup Log ---" -ForegroundColor Yellow
-        Get-Content $logFile -Tail 25
+    if (Test-Path $errLog) {
+        Write-Host "--- Error Log ---" -ForegroundColor Yellow
+        Get-Content $errLog -Tail 25
+    }
+    if (Test-Path $outLog) {
+        Write-Host "--- Output Log ---" -ForegroundColor Yellow
+        Get-Content $outLog -Tail 25
     }
     Read-Host "Press Enter to close"
     exit 1
@@ -205,10 +216,9 @@ Write-Host ""
 Write-Host "========================================================" -ForegroundColor Green
 Write-Host "  SUCCESS! Helper is LIVE at http://127.0.0.1:5055" -ForegroundColor Green
 Write-Host "========================================================" -ForegroundColor Green
-Write-Host "Opening Settings in your browser now..." -ForegroundColor Cyan
-Write-Host "Enter your Scoville email & password and click 'Save All Settings'!" -ForegroundColor Yellow
+Write-Host "Opening dashboard in your browser now..." -ForegroundColor Cyan
 
 if (-not $NoBrowser) {
-    Start-Process "http://127.0.0.1:5055/#settings"
+    Start-Process "http://127.0.0.1:5055/"
     Start-Sleep -Seconds 3
 }
