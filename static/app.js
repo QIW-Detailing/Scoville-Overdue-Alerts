@@ -275,7 +275,7 @@ async function triggerScovilleSync() {
   } catch (err) {
     dot.className = "dot error";
     document.getElementById("lastSyncText").textContent = "Sync failed";
-    toast(err.message, "err");
+    toast(friendlyFetchError(err), "err");
   } finally {
     btn.disabled = false;
     btn.innerHTML = "&#x21bb; Sync Scoville Now";
@@ -427,7 +427,8 @@ function itemMatchesFilters(it, f) {
     if (!ms || !ms.is_overdue) return false;
   }
   if (f.search) {
-    const hay = `${it.qkey} ${it.job_number} ${it.job_site} ${it.category} ${it.sub_category} ${it.dpm} ${it.ps} ${it.lot_number || ""}`.toLowerCase();
+    const recEmails = (it.notify_recipients || []).map((r) => r.email || "").join(" ");
+    const hay = `${it.qkey} ${it.job_number} ${it.job_site} ${it.category} ${it.sub_category} ${it.dpm} ${it.ps} ${it.lot_number || ""} ${recEmails}`.toLowerCase();
     if (!hay.includes(f.search)) return false;
   }
   return true;
@@ -437,6 +438,7 @@ function renderPackets() {
   const container = document.getElementById("packetsContainer");
   if (!state.evaluation) return;
   const f = getActiveFilters();
+  const hasClientFilter = Boolean(f.dpm || f.ps || f.search);
 
   const packets = (state.evaluation.packets || [])
     .map((pkt) => {
@@ -470,18 +472,28 @@ function renderPackets() {
         <h3>No ${esc(msLabel)} Items Found</h3>
         <p>
           ${
-            isToday && !state.selectedMilestone
+            hasClientFilter
+              ? `No overdue items match your active search / filter${f.search ? ` ("${esc(f.search)}")` : ""}.`
+              : isToday && !state.selectedMilestone
               ? "Great news — 0 items have missed dates strictly before today in Scoville."
               : "No items match your current selection / filter."
           }
         </p>
         <div class="inline-row" style="justify-content:center;">
+          ${hasClientFilter ? `<button type="button" class="btn btn-primary" id="emptyBtnClearFilters">Clear Search &amp; Filters</button>` : ""}
           ${state.selectedMilestone ? `<button type="button" class="btn btn-outline" id="emptyBtnShowAll">Back to All Overdues</button>` : ""}
           <button type="button" class="btn btn-outline" id="emptyBtnDueToday">Include Items Due Today</button>
-          <button type="button" class="btn btn-primary" id="emptyBtnPlus7">Simulate +7 Days Out</button>
+          <button type="button" class="btn btn-outline" id="emptyBtnPlus7">Simulate +7 Days Out</button>
         </div>
       </div>
     `;
+    document.getElementById("emptyBtnClearFilters")?.addEventListener("click", () => {
+      document.getElementById("filterSearch").value = "";
+      document.getElementById("filterDpm").value = "";
+      document.getElementById("filterPs").value = "";
+      renderPackets();
+      renderItemsTable();
+    });
     document.getElementById("emptyBtnShowAll")?.addEventListener("click", () => {
       state.selectedMilestone = "";
       loadState(true);
@@ -1287,6 +1299,16 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("modalBtnDraft").addEventListener("click", () => {
     if (state.previewPacketId) sendPackets([state.previewPacketId], "outlook_draft");
   });
+
+  const searchBox = document.getElementById("filterSearch");
+  if (searchBox) searchBox.value = "";
+  setTimeout(() => {
+    if (searchBox && document.activeElement !== searchBox && searchBox.value.includes("@")) {
+      searchBox.value = "";
+      renderPackets();
+      renderItemsTable();
+    }
+  }, 450);
 
   loadState(false);
 });

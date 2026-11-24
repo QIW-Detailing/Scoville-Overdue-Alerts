@@ -118,7 +118,7 @@
 
         <div class="control-group grow">
           <label for="filterSearch">Search QKEY / Job:</label>
-          <input type="text" id="filterSearch" placeholder="e.g. 22834, OHT, Akash..." />
+          <input type="search" id="filterSearch" name="qkey_job_search_box" autocomplete="off" readonly onfocus="this.removeAttribute('readonly');" placeholder="e.g. 22834, OHT, Akash..." />
         </div>
       </div>
 
@@ -362,22 +362,22 @@
             <p class="hint" id="lastAutoRunHint">Last automatic run: Never</p>
           </div>
 
-          <div class="panel-card">
+          <form class="panel-card" autocomplete="on" onsubmit="return false;">
             <h3>Scoville Connection</h3>
             <p class="muted">Read-only sync credentials for Scoville (`http://scoville:7555`).</p>
             <div class="form-row">
               <label>Scoville Base URL</label>
-              <input type="url" id="setScovilleUrl" value="http://scoville:7555" />
+              <input type="url" id="setScovilleUrl" value="http://scoville:7555" autocomplete="off" />
             </div>
             <div class="form-row">
               <label>Scoville Login Email</label>
-              <input type="email" id="setScovilleEmail" placeholder="your.name@qiworks.com" />
+              <input type="email" id="setScovilleEmail" name="username" autocomplete="username" placeholder="your.name@qiworks.com" />
             </div>
             <div class="form-row">
               <label>Scoville Password</label>
-              <input type="password" id="setScovillePassword" placeholder="Enter your Scoville password" />
+              <input type="password" id="setScovillePassword" name="password" autocomplete="current-password" placeholder="Enter your Scoville password" />
             </div>
-          </div>
+          </form>
 
           <div class="save-bar">
             <button id="btnSaveSettings" class="btn btn-primary btn-lg">Save All Settings</button>
@@ -407,7 +407,7 @@
     </div>
   </div>
 
-  <script src="./static/standalone.js?v=10"></script>
-  <script src="./static/app.js?v=10"></script>
+  <script src="./static/standalone.js?v=11"></script>
+  <script src="./static/app.js?v=11"></script>
 </body>
 </html>

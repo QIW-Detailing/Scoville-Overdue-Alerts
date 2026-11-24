@@ -135,19 +135,29 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Write-Host "[3/4] Creating 'Scoville Overdue Alerts' shortcut on Desktop..." -ForegroundColor Cyan
+Write-Host "[3/4] Creating Desktop & Windows Startup shortcuts..." -ForegroundColor Cyan
 try {
     $ws = New-Object -ComObject WScript.Shell
+    $vbsPath = Join-Path $AppDir "run_silent.vbs"
+
     $desktop = [Environment]::GetFolderPath("Desktop")
     $lnk = $ws.CreateShortcut((Join-Path $desktop "Scoville Overdue Alerts.lnk"))
     $lnk.TargetPath = "wscript.exe"
-    $vbsPath = Join-Path $AppDir "run_silent.vbs"
     $lnk.Arguments = "`"$vbsPath`""
     $lnk.WorkingDirectory = $AppDir
     $lnk.Description = "Start Scoville Overdue Alerts local helper and open dashboard"
     $lnk.Save()
+
+    # Also register silent auto-start on Windows login so port 5055 stays ready after reboots
+    $startupDir = [Environment]::GetFolderPath("Startup")
+    $startupLnk = $ws.CreateShortcut((Join-Path $startupDir "Scoville Overdue Alerts Helper.lnk"))
+    $startupLnk.TargetPath = "wscript.exe"
+    $startupLnk.Arguments = "`"$vbsPath`" --no-browser"
+    $startupLnk.WorkingDirectory = $AppDir
+    $startupLnk.Description = "Auto-start Scoville Overdue Alerts local helper in background"
+    $startupLnk.Save()
 } catch {
-    Write-Host "      (Note: Could not create Desktop shortcut: $($_.Exception.Message))" -ForegroundColor Yellow
+    Write-Host "      (Note: Could not create shortcut: $($_.Exception.Message))" -ForegroundColor Yellow
 }
 
 Write-Host "[4/4] Starting local Scoville & Outlook helper on http://127.0.0.1:5055 ..." -ForegroundColor Cyan
