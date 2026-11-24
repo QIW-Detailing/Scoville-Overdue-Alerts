@@ -1,4 +1,4 @@
-const FRONTEND_APP_VERSION = 14;
+const FRONTEND_APP_VERSION = 15;
 const IS_GITHUB_PAGES =
   window.location.protocol === "https:" || window.location.hostname.endsWith("github.io");
 const IS_REMOTE_CLIENT =
@@ -130,6 +130,7 @@ async function loadStaticSnapshotFallback(preserveDate = false) {
 
   const dlBtn = document.getElementById("btnDownloadHelper");
   if (dlBtn) dlBtn.style.display = "inline-flex";
+  document.getElementById("outdatedHelperBanner")?.classList.add("hidden");
 
   dot.className = "dot";
   document.getElementById("lastSyncText").textContent = state.syncedAt
@@ -180,17 +181,21 @@ async function loadState(preserveDate = false) {
 
     state.staticMode = false;
     state.needsCredentials = Boolean(data.needs_credentials);
+    const serverVer = Number(data.app_version || 0);
     const dlBtn = document.getElementById("btnDownloadHelper");
     if (dlBtn) {
-      const serverVer = Number(data.app_version || 0);
       dlBtn.style.display = "inline-flex";
       if (serverVer < FRONTEND_APP_VERSION) {
         dlBtn.innerHTML = "&#x2B06; Update PC Helper (.zip)";
-        dlBtn.title = "A newer version of the PC Helper is available — click to download & run Setup-This-PC.bat";
+        dlBtn.title = "A newer version of the PC Helper is available — click to download & run Setup-This-PC";
       } else {
         dlBtn.innerHTML = "&#x2B07; PC Live-Sync Helper (.zip)";
         dlBtn.title = "Download the PC Live-Sync Helper (.zip) for another computer or to reinstall";
       }
+    }
+    const outdatedBanner = document.getElementById("outdatedHelperBanner");
+    if (outdatedBanner) {
+      outdatedBanner.classList.toggle("hidden", serverVer >= FRONTEND_APP_VERSION);
     }
 
     state.today = data.today;

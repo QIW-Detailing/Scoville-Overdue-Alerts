@@ -169,16 +169,28 @@ try {
 
 Write-Host "[4/4] Starting local Scoville & Outlook helper on http://127.0.0.1:5055 ..." -ForegroundColor Cyan
 
-# Stop any old Python process already listening on port 5055 so fresh code runs cleanly
+# Forcefully stop ANY old Python / wscript process listening on port 5055 (including older folders!)
+try {
+    $netLines = netstat -ano | Select-String ":5055\s+.*LISTENING\s+(\d+)"
+    foreach ($m in $netLines) {
+        $procId = [int]$m.Matches[0].Groups[1].Value
+        if ($procId -gt 4) {
+            Write-Host "      Stopping older helper process (PID $procId) on port 5055..." -ForegroundColor Yellow
+            & taskkill.exe /F /T /PID $procId >$null 2>$null
+            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+        }
+    }
+} catch {}
 try {
     $oldListeners = Get-NetTCPConnection -LocalPort 5055 -State Listen -ErrorAction SilentlyContinue
     foreach ($conn in $oldListeners) {
         if ($conn.OwningProcess -and $conn.OwningProcess -gt 4) {
+            & taskkill.exe /F /T /PID $conn.OwningProcess >$null 2>$null
             Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
         }
     }
-    Start-Sleep -Milliseconds 600
 } catch {}
+Start-Sleep -Milliseconds 800
 
 # Launch app.py directly via PowerShell Start-Process (avoids VBScript / Defender ASR blocks!)
 $outLog = Join-Path $dataDir "server.log"
@@ -189,8 +201,8 @@ $serverReady = $false
 for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Milliseconds 500
     try {
-        $ping = Invoke-WebRequest -Uri "http://127.0.0.1:5055/api/ping" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
-        if ($ping.StatusCode -eq 200) {
+        $ping = Invoke-RestMethod -Uri "http://127.0.0.1:5055/api/ping" -TimeoutSec 2 -ErrorAction Stop
+        if ($ping -and $ping.ok -and ([int]$ping.app_version -ge 15)) {
             $serverReady = $true
             break
         }
@@ -199,7 +211,7 @@ for ($i = 0; $i -lt 30; $i++) {
 
 if (-not $serverReady) {
     Write-Host ""
-    Write-Host "[ERROR] Local helper did not start on port 5055." -ForegroundColor Red
+    Write-Host "[ERROR] New helper (v15) did not start cleanly on port 5055." -ForegroundColor Red
     if (Test-Path $errLog) {
         Write-Host "--- Error Log ---" -ForegroundColor Yellow
         Get-Content $errLog -Tail 25
@@ -214,11 +226,11 @@ if (-not $serverReady) {
 
 Write-Host ""
 Write-Host "========================================================" -ForegroundColor Green
-Write-Host "  SUCCESS! Helper is LIVE at http://127.0.0.1:5055" -ForegroundColor Green
+Write-Host "  SUCCESS! Helper v2.5 is LIVE at http://127.0.0.1:5055" -ForegroundColor Green
 Write-Host "========================================================" -ForegroundColor Green
-Write-Host "Opening dashboard in your browser now..." -ForegroundColor Cyan
+Write-Host "Opening updated dashboard in your browser now..." -ForegroundColor Cyan
 
 if (-not $NoBrowser) {
-    Start-Process "http://127.0.0.1:5055/"
+    Start-Process "http://127.0.0.1:5055/?v=15"
     Start-Sleep -Seconds 3
 }

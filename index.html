@@ -3,15 +3,18 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
   <title>Scoville Overdue Detailing Alerts — QIWorks</title>
-  <link rel="stylesheet" href="./static/style.css?v=7" />
+  <link rel="stylesheet" href="./static/style.css?v=15" />
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-brand">
       <div class="brand-badge">SC</div>
       <div>
-        <h1>Scoville Overdue Alerts</h1>
+        <h1>Scoville Overdue Alerts <span class="ver-pill">v2.5</span></h1>
         <p class="subtitle">
           From: <strong id="hdrFromEmail">Local Outlook Account</strong> &middot;
           Subject: <strong id="hdrSubject">Overdues on Scoville</strong> &middot;
@@ -54,6 +57,16 @@
   <div id="toastContainer" class="toast-container"></div>
 
   <main class="container">
+    <div id="outdatedHelperBanner" class="outdated-banner hidden">
+      <div>
+        <strong>&#x26A0; Outdated Background Helper Running on This PC!</strong><br />
+        <span>Your browser opened the new dashboard, but your computer is still running an older background helper on port 5055 (missing non-admin Scoville sync &amp; 7-day updates). Download the latest <code>.zip</code>, <strong>Extract All</strong>, and double-click <strong>Setup-This-PC</strong> once to replace the old background process.</span>
+      </div>
+      <a href="https://github.com/QIW-Detailing/Scoville-Overdue-Alerts/archive/refs/heads/main.zip" class="btn btn-primary">
+        &#x2B06; Download Latest Helper (.zip)
+      </a>
+    </div>
+
     <!-- TAB 1: DASHBOARD -->
     <section id="tab-dashboard" class="tab-panel active">
       <!-- KPI Strip (Click any card to open its items) -->
@@ -428,7 +441,7 @@
     </div>
   </div>
 
-  <script src="./static/standalone.js?v=14"></script>
-  <script src="./static/app.js?v=14"></script>
+  <script src="./static/standalone.js?v=15"></script>
+  <script src="./static/app.js?v=15"></script>
 </body>
 </html>

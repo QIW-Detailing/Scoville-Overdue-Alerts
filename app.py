@@ -86,6 +86,9 @@ def _handle_cors_preflight():
     return None
 
 
+APP_VERSION = 15
+
+
 @app.after_request
 def _add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "*")
@@ -93,12 +96,15 @@ def _add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Accept"
     resp.headers["Access-Control-Allow-Private-Network"] = "true"
     resp.headers["Access-Control-Allow-Local-Network"] = "true"
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
     return resp
 
 
 @app.route("/api/ping", methods=["GET"])
 def api_ping():
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "app_version": APP_VERSION})
 
 
 def perform_scoville_sync() -> tuple[str, dict, list[dict]]:
@@ -227,7 +233,7 @@ def api_state():
     return jsonify(
         {
             "ok": True,
-            "app_version": 14,
+            "app_version": APP_VERSION,
             "today": date.today().isoformat(),
             "synced_at": synced_at,
             "sync_error": sync_error,
