@@ -744,6 +744,7 @@ def evaluate_items_and_packets(
     milestone_filter: str | None = None,
     zero_value_items: list[dict] | None = None,
     zero_value_scanned: int = 0,
+    due_soon_days: int = 7,
 ) -> dict:
     """
     Evaluates:
@@ -781,12 +782,16 @@ def evaluate_items_and_packets(
         z for z in (zero_value_items or []) if not (exc_hold and z.get("on_hold"))
     ]
 
+    due_soon_days = max(1, min(365, int(due_soon_days or 7)))
+
     # Always compute the 6 date milestone counts so the top filter strip keeps live counts
     evaluated_items: list[dict] = []
     overdue_items: list[dict] = []
+    due_soon_items: list[dict] = []
     milestone_counts = {m["key"]: 0 for m in TRACKED_MILESTONES}
     all_overdue_items_unfiltered_count = 0
     due_soon_count = 0
+    due_soon_milestones_total = 0
 
     for item in raw_items:
         if item.get("tekla_linked"):
@@ -797,6 +802,7 @@ def evaluate_items_and_packets(
         eval_milestones: dict[str, dict] = {}
         all_item_overdue_list: list[dict] = []
         filtered_item_overdue_list: list[dict] = []
+        filtered_item_due_soon_list: list[dict] = []
         item_has_due_soon = False
 
         for m in TRACKED_MILESTONES:
@@ -807,6 +813,7 @@ def evaluate_items_and_packets(
             status = raw_m.get("status", "unscheduled")
             iso_dt = raw_m.get("date")
             days_overdue = None
+            days_until = None
             is_overdue = False
             is_due_today = False
             is_due_soon = False
@@ -816,18 +823,20 @@ def evaluate_items_and_packets(
                     due_dt = datetime.strptime(iso_dt, "%Y-%m-%d").date()
                     delta = (ref_date - due_dt).days
                     days_overdue = delta
+                    days_until = -delta
                     is_due_today = delta == 0
                     if inc_today:
                         is_overdue = delta >= 0
                     else:
                         is_overdue = delta > 0
-                    if not is_overdue and -3 <= delta <= 0:
+                    if not is_overdue and 0 <= days_until <= due_soon_days:
                         is_due_soon = True
                 except ValueError:
                     pass
 
             if is_due_soon and (not ms_filter or ms_filter == m_key):
                 item_has_due_soon = True
+                due_soon_milestones_total += 1
 
             enriched = {
                 "key": m_key,
@@ -839,11 +848,14 @@ def evaluate_items_and_packets(
                 "date": iso_dt,
                 "display": raw_m.get("display", "—"),
                 "days_overdue": days_overdue,
+                "days_until": days_until,
                 "is_overdue": is_overdue,
                 "is_due_today": is_due_today,
                 "is_due_soon": is_due_soon,
             }
             eval_milestones[m_key] = enriched
+            if is_due_soon and not is_zero_mode and (not ms_filter or ms_filter == m_key):
+                filtered_item_due_soon_list.append(enriched)
             if is_overdue:
                 milestone_counts[m_key] += 1
                 all_item_overdue_list.append(enriched)
@@ -869,15 +881,23 @@ def evaluate_items_and_packets(
             **item,
             "milestones": eval_milestones,
             "overdue_milestones": filtered_item_overdue_list,
+            "due_soon_milestones": filtered_item_due_soon_list,
             "overdue_count": len(filtered_item_overdue_list),
+            "due_soon_count": len(filtered_item_due_soon_list),
             "is_overdue": len(filtered_item_overdue_list) > 0,
+            "is_due_soon": len(filtered_item_due_soon_list) > 0,
             "has_ps_overdue": has_ps_overdue,
             "max_days_overdue": max((m["days_overdue"] or 0 for m in filtered_item_overdue_list), default=0),
+            "min_days_until": min((m["days_until"] for m in filtered_item_due_soon_list if m["days_until"] is not None), default=9999),
             "notify_recipients": notify_roles,
         }
         evaluated_items.append(enriched_item)
         if enriched_item["is_overdue"]:
             overdue_items.append(enriched_item)
+        if enriched_item["is_due_soon"]:
+            due_soon_items.append(enriched_item)
+
+    due_soon_items.sort(key=lambda x: (x["min_days_until"], int(x["qkey"])))
 
     # SEPARATE MODE: `$0 Items` (DPM ONLY, Released + Unreleased, NOT in `All`!)
     if is_zero_mode:
@@ -987,10 +1007,14 @@ def evaluate_items_and_packets(
                 "zero_value_released_count": sum(1 for z in active_zero_items if z.get("released")),
                 "zero_value_unreleased_count": sum(1 for z in active_zero_items if not z.get("released")),
                 "recipients_to_email": len(packets),
+                "due_soon_days": due_soon_days,
+                "due_soon_count": 0,
+                "due_soon_milestones_total": 0,
                 "due_soon_3d_count": 0,
             },
             "items": zero_enriched_items,
             "overdue_items": zero_enriched_items,
+            "due_soon_items": [],
             "packets": packets,
         }
 
@@ -1126,9 +1150,13 @@ def evaluate_items_and_packets(
             "zero_value_released_count": sum(1 for z in active_zero_items if z.get("released")),
             "zero_value_unreleased_count": sum(1 for z in active_zero_items if not z.get("released")),
             "recipients_to_email": len(packets),
+            "due_soon_days": due_soon_days,
+            "due_soon_count": due_soon_count,
+            "due_soon_milestones_total": due_soon_milestones_total,
             "due_soon_3d_count": due_soon_count,
         },
         "items": evaluated_items,
         "overdue_items": overdue_items,
+        "due_soon_items": due_soon_items,
         "packets": packets,
     }

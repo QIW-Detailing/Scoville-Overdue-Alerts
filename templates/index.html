@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Scoville Overdue Detailing Alerts — QIWorks</title>
-  <link rel="stylesheet" href="./static/style.css?v=6" />
+  <link rel="stylesheet" href="./static/style.css?v=7" />
 </head>
 <body>
   <header class="topbar">
@@ -56,27 +56,27 @@
   <main class="container">
     <!-- TAB 1: DASHBOARD -->
     <section id="tab-dashboard" class="tab-panel active">
-      <!-- KPI Strip -->
+      <!-- KPI Strip (Click any card to open its items) -->
       <div class="kpi-grid">
-        <div class="kpi-card">
+        <div class="kpi-card clickable" id="kpiCardActive" data-kpi-subview="all-table" title="Click to view all active unreleased items">
           <div class="kpi-label">Active Unreleased Items</div>
           <div class="kpi-value" id="kpiTotalItems">—</div>
           <div class="kpi-foot" id="kpiOnHoldNote">Synced from Scoville</div>
         </div>
-        <div class="kpi-card alert">
+        <div class="kpi-card alert clickable" id="kpiCardOverdue" data-kpi-subview="overdue-table" title="Click to view overdue items table">
           <div class="kpi-label">Overdue Items</div>
           <div class="kpi-value" id="kpiOverdueItems">0</div>
           <div class="kpi-foot" id="kpiOverdueMilestones">0 missed detailing dates</div>
         </div>
-        <div class="kpi-card">
+        <div class="kpi-card clickable active-kpi" id="kpiCardQueued" data-kpi-subview="packets" title="Click to view queued emails by recipient">
           <div class="kpi-label">Emails Queued</div>
           <div class="kpi-value" id="kpiPacketsCount">0</div>
           <div class="kpi-foot">DPMs &amp; Field-Dims PSs</div>
         </div>
-        <div class="kpi-card warn">
-          <div class="kpi-label">Due Next 3 Days</div>
+        <div class="kpi-card warn clickable" id="kpiCardDueSoon" data-kpi-subview="due-soon-table" title="Click to view items due in the next 7 days (or custom days)">
+          <div class="kpi-label" id="kpiDueSoonLabel">Due Next 7 Days</div>
           <div class="kpi-value" id="kpiDueSoon">0</div>
-          <div class="kpi-foot">Upcoming detailing dates</div>
+          <div class="kpi-foot" id="kpiDueSoonFoot">Upcoming detailing dates</div>
         </div>
       </div>
 
@@ -127,6 +127,7 @@
         <div class="segmented">
           <button class="seg-btn active" data-subview="packets">Email Queue by Recipient</button>
           <button class="seg-btn" data-subview="overdue-table">Overdue Items Table</button>
+          <button class="seg-btn" data-subview="due-soon-table" id="segBtnDueSoon">Due Next 7 Days</button>
           <button class="seg-btn" data-subview="all-table">All Unreleased Detailing Items</button>
         </div>
         <div class="bulk-send-actions">
@@ -145,8 +146,28 @@
         <div id="packetsContainer" class="packets-grid"></div>
       </div>
 
-      <!-- Subview 2 & 3: Items Table -->
+      <!-- Subview 2, 3 & 4: Items Table -->
       <div id="subview-table" class="subview-panel">
+        <div id="dueSoonToolbar" class="due-soon-toolbar hidden">
+          <div class="due-soon-left">
+            <strong>Show Items Due In:</strong>
+            <select id="dueSoonPresetSelect">
+              <option value="7" selected>Next 7 Days (Default)</option>
+              <option value="3">Next 3 Days</option>
+              <option value="14">Next 14 Days</option>
+              <option value="30">Next 30 Days</option>
+              <option value="custom">Custom...</option>
+            </select>
+            <div id="dueSoonCustomWrap" class="inline-row hidden">
+              <input type="number" id="dueSoonCustomInput" min="1" max="365" value="7" style="width:84px;" />
+              <span>days</span>
+              <button type="button" class="btn btn-xs btn-primary" id="btnApplyCustomDueSoon">Apply</button>
+            </div>
+          </div>
+          <div class="due-soon-summary" id="dueSoonToolbarSummary">
+            Upcoming schedule items due within 7 days
+          </div>
+        </div>
         <div class="table-wrap">
           <table class="data-table">
             <thead>
@@ -407,7 +428,7 @@
     </div>
   </div>
 
-  <script src="./static/standalone.js?v=11"></script>
-  <script src="./static/app.js?v=11"></script>
+  <script src="./static/standalone.js?v=12"></script>
+  <script src="./static/app.js?v=12"></script>
 </body>
 </html>

@@ -30,6 +30,8 @@ const state = {
   activeTab: "dashboard",
   activeSubview: "packets",
   selectedMilestone: "",
+  dueSoonDays: 7,
+  dueSoonPreset: "7",
   previewPacketId: null,
 };
 
@@ -83,6 +85,7 @@ function currentEvalParams() {
     include_due_today: incToday,
     exclude_on_hold: excHold,
     milestone: state.selectedMilestone || "",
+    due_soon_days: state.dueSoonDays || 7,
   };
 }
 
@@ -161,8 +164,11 @@ async function loadState(preserveDate = false) {
         include_due_today: String(p.include_due_today),
         exclude_on_hold: String(p.exclude_on_hold),
         milestone: p.milestone,
+        due_soon_days: String(p.due_soon_days),
       });
       url += `?${qs.toString()}`;
+    } else if (state.dueSoonDays && state.dueSoonDays !== 7) {
+      url += `?due_soon_days=${encodeURIComponent(state.dueSoonDays)}`;
     }
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), IS_GITHUB_PAGES ? 2500 : 30000);
@@ -305,6 +311,14 @@ function renderHeaderAndKPIs() {
 
   const sum = ev.summary;
   const isZero = state.selectedMilestone === "zero_value";
+  const dDays = state.dueSoonDays || sum.due_soon_days || 7;
+  const dayWord = dDays === 1 ? "Day" : "Days";
+  const dueSoonTitle = `Due Next ${dDays} ${dayWord}`;
+
+  const dueLblEl = document.getElementById("kpiDueSoonLabel");
+  if (dueLblEl) dueLblEl.textContent = dueSoonTitle;
+  const segDueBtn = document.getElementById("segBtnDueSoon");
+  if (segDueBtn) segDueBtn.textContent = dueSoonTitle;
 
   if (isZero) {
     document.getElementById("kpiTotalItems").textContent = sum.zero_value_scanned || 0;
@@ -315,6 +329,8 @@ function renderHeaderAndKPIs() {
       `$0 items w/ real scope values available (separate from All)`;
     document.getElementById("kpiPacketsCount").textContent = sum.recipients_to_email;
     document.getElementById("kpiDueSoon").textContent = "—";
+    const dueFootEl = document.getElementById("kpiDueSoonFoot");
+    if (dueFootEl) dueFootEl.textContent = "Click to switch to schedule items";
   } else {
     document.getElementById("kpiTotalItems").textContent = sum.total_active_items;
     document.getElementById("kpiOnHoldNote").textContent =
@@ -327,8 +343,21 @@ function renderHeaderAndKPIs() {
     document.getElementById("kpiOverdueItems").textContent = sum.overdue_items_count;
     document.getElementById("kpiOverdueMilestones").textContent = `${sum.overdue_milestones_total} missed ${msDesc} (as of ${ev.as_of_display})`;
     document.getElementById("kpiPacketsCount").textContent = sum.recipients_to_email;
-    document.getElementById("kpiDueSoon").textContent = sum.due_soon_3d_count;
+    const dueCnt = sum.due_soon_count ?? sum.due_soon_3d_count ?? 0;
+    const dueMsCnt = sum.due_soon_milestones_total ?? dueCnt;
+    document.getElementById("kpiDueSoon").textContent = dueCnt;
+    const dueFootEl = document.getElementById("kpiDueSoonFoot");
+    if (dueFootEl) {
+      dueFootEl.textContent = `${dueMsCnt} upcoming ${msDesc} (click to view)`;
+    }
   }
+
+  document.querySelectorAll(".kpi-card[data-kpi-subview]").forEach((card) => {
+    card.classList.toggle(
+      "active-kpi",
+      card.getAttribute("data-kpi-subview") === state.activeSubview
+    );
+  });
 
   document.getElementById("tabOverdueCount").textContent = sum.all_overdue_items_count ?? sum.overdue_items_count;
   document.getElementById("tabDirCount").textContent = state.directory.length;
@@ -417,14 +446,20 @@ function getActiveFilters() {
   };
 }
 
-function itemMatchesFilters(it, f) {
+function itemMatchesFilters(it, f, viewMode = "overdue") {
   if (f.dpm && it.dpm !== f.dpm) return false;
   if (f.ps && it.ps !== f.ps) return false;
   if (f.milestone === "zero_value") {
     if (!it.is_zero_value_item) return false;
   } else if (f.milestone) {
     const ms = it.milestones?.[f.milestone];
-    if (!ms || !ms.is_overdue) return false;
+    if (viewMode === "due-soon-table") {
+      if (!ms || !ms.is_due_soon) return false;
+    } else if (viewMode === "all-table") {
+      if (!ms) return false;
+    } else {
+      if (!ms || !ms.is_overdue) return false;
+    }
   }
   if (f.search) {
     const recEmails = (it.notify_recipients || []).map((r) => r.email || "").join(" ");
@@ -641,16 +676,51 @@ function renderMilestoneBadge(m) {
     return `<span class="badge ${cls}">${esc(m.display)} (${tag})</span>`;
   }
   if (m.is_due_soon) {
-    return `<span class="badge badge-soon">${esc(m.display)}</span>`;
+    const rem =
+      m.days_until === 0
+        ? "Today"
+        : m.days_until !== null && m.days_until !== undefined
+        ? `in ${m.days_until}d`
+        : "";
+    return `<span class="badge badge-soon">${esc(m.display)}${rem ? ` (${rem})` : ""}</span>`;
   }
   return `<span class="badge badge-sched">${esc(m.display)}</span>`;
+}
+
+function setActiveSubview(subviewName) {
+  state.activeSubview = subviewName;
+  document.querySelectorAll(".seg-btn").forEach((b) => {
+    b.classList.toggle("active", b.getAttribute("data-subview") === subviewName);
+  });
+  document.querySelectorAll(".kpi-card[data-kpi-subview]").forEach((card) => {
+    card.classList.toggle("active-kpi", card.getAttribute("data-kpi-subview") === subviewName);
+  });
+
+  if (subviewName === "due-soon-table" && state.selectedMilestone === "zero_value") {
+    state.selectedMilestone = "";
+    loadState(true);
+  }
+
+  if (subviewName === "packets") {
+    document.getElementById("subview-packets").classList.add("active");
+    document.getElementById("subview-table").classList.remove("active");
+  } else {
+    document.getElementById("subview-packets").classList.remove("active");
+    document.getElementById("subview-table").classList.add("active");
+    renderItemsTable();
+  }
 }
 
 function renderItemsTable() {
   const theadRow = document.getElementById("itemsTableHeadRow");
   const tbody = document.getElementById("itemsTableBody");
+  const dueToolbar = document.getElementById("dueSoonToolbar");
   if (!state.evaluation) return;
   const f = getActiveFilters();
+
+  if (dueToolbar) {
+    dueToolbar.classList.toggle("hidden", state.activeSubview !== "due-soon-table");
+  }
 
   if (f.milestone === "zero_value") {
     theadRow.innerHTML =
@@ -661,7 +731,7 @@ function renderItemsTable() {
       `<th>Available Scope Items &amp; Values</th>` +
       `<th>Assign Value</th>`;
 
-    const filteredZero = (state.evaluation.items || []).filter((it) => itemMatchesFilters(it, f));
+    const filteredZero = (state.evaluation.items || []).filter((it) => itemMatchesFilters(it, f, state.activeSubview));
     if (filteredZero.length === 0) {
       tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:28px;color:#64748b;">No $0 items with available scope values match your filters.</td></tr>`;
       return;
@@ -723,12 +793,24 @@ function renderItemsTable() {
 
   const colSpan = 5 + visibleMilestones.length;
 
-  const sourceList =
-    state.activeSubview === "overdue-table"
-      ? state.evaluation.overdue_items
-      : state.evaluation.items;
+  let sourceList = state.evaluation.items;
+  if (state.activeSubview === "overdue-table") {
+    sourceList = state.evaluation.overdue_items;
+  } else if (state.activeSubview === "due-soon-table") {
+    sourceList =
+      state.evaluation.due_soon_items ||
+      (state.evaluation.items || []).filter((x) => x.is_due_soon);
+  }
 
-  const filtered = (sourceList || []).filter((it) => itemMatchesFilters(it, f));
+  const filtered = (sourceList || []).filter((it) => itemMatchesFilters(it, f, state.activeSubview));
+
+  if (state.activeSubview === "due-soon-table") {
+    const sumEl = document.getElementById("dueSoonToolbarSummary");
+    if (sumEl) {
+      const d = state.dueSoonDays || 7;
+      sumEl.textContent = `Showing ${filtered.length} item${filtered.length === 1 ? "" : "s"} due within the next ${d} day${d === 1 ? "" : "s"} (from ${state.evaluation.as_of_display})`;
+    }
+  }
 
   if (filtered.length === 0) {
     tbody.innerHTML = `<tr><td colspan="${colSpan}" style="text-align:center;padding:28px;color:#64748b;">No items match the current view and filters.</td></tr>`;
@@ -1169,22 +1251,60 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // Subviews
+  // Subviews & Clickable KPI Cards
   document.querySelectorAll(".seg-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".seg-btn").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      state.activeSubview = btn.getAttribute("data-subview");
-      if (state.activeSubview === "packets") {
-        document.getElementById("subview-packets").classList.add("active");
-        document.getElementById("subview-table").classList.remove("active");
-      } else {
-        document.getElementById("subview-packets").classList.remove("active");
-        document.getElementById("subview-table").classList.add("active");
-        renderItemsTable();
-      }
+      setActiveSubview(btn.getAttribute("data-subview"));
     });
   });
+
+  document.querySelectorAll(".kpi-card[data-kpi-subview]").forEach((card) => {
+    card.addEventListener("click", () => {
+      const targetView = card.getAttribute("data-kpi-subview");
+      setActiveSubview(targetView);
+    });
+  });
+
+  // Due Soon Lookahead Window Controls (Default = 7 Days, plus Custom option)
+  const duePresetSel = document.getElementById("dueSoonPresetSelect");
+  const dueCustomWrap = document.getElementById("dueSoonCustomWrap");
+  const dueCustomInp = document.getElementById("dueSoonCustomInput");
+  const btnApplyCustomDue = document.getElementById("btnApplyCustomDueSoon");
+
+  function applyCustomDueDays() {
+    const val = Math.max(1, Math.min(365, Math.round(Number(dueCustomInp?.value) || 7)));
+    if (dueCustomInp) dueCustomInp.value = String(val);
+    state.dueSoonDays = val;
+    loadState(true);
+  }
+
+  duePresetSel?.addEventListener("change", () => {
+    const v = duePresetSel.value;
+    state.dueSoonPreset = v;
+    if (v === "custom") {
+      dueCustomWrap?.classList.remove("hidden");
+      if (dueCustomInp) {
+        dueCustomInp.value = String(state.dueSoonDays || 7);
+        dueCustomInp.focus();
+        dueCustomInp.select();
+      }
+    } else {
+      dueCustomWrap?.classList.add("hidden");
+      const n = Number(v) || 7;
+      state.dueSoonDays = n;
+      if (dueCustomInp) dueCustomInp.value = String(n);
+      loadState(true);
+    }
+  });
+
+  btnApplyCustomDue?.addEventListener("click", applyCustomDueDays);
+  dueCustomInp?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      applyCustomDueDays();
+    }
+  });
+  dueCustomInp?.addEventListener("change", applyCustomDueDays);
 
   // Sync & Date Controls
   document.getElementById("btnSyncNow").addEventListener("click", triggerScovilleSync);

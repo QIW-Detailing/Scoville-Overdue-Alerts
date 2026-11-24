@@ -277,6 +277,62 @@ body {
   box-shadow: var(--shadow);
 }
 
+.kpi-card.clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+}
+
+.kpi-card.clickable:hover {
+  transform: translateY(-2px);
+  border-color: var(--primary);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+}
+
+.kpi-card.clickable.active-kpi {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+  background: #f8fbff;
+}
+
+.kpi-card.warn.clickable.active-kpi {
+  outline-color: var(--warn);
+  background: #fffbeb;
+}
+
+.kpi-card.alert.clickable.active-kpi {
+  outline-color: var(--danger);
+  background: #fff5f5;
+}
+
+.due-soon-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: var(--radius);
+  padding: 11px 16px;
+  margin-bottom: 12px;
+}
+
+.due-soon-left {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: #78350f;
+}
+
+.due-soon-summary {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #92400e;
+}
+
 .kpi-card.alert {
   border-left: 4px solid var(--danger);
 }
@@ -932,4 +988,8 @@ select:focus {
 
 .toast.err {
   border-left-color: #ef4444;
+}
+
+.hidden {
+  display: none !important;
 }

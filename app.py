@@ -140,6 +140,7 @@ def _build_current_evaluation(
     exclude_on_hold: bool | None = None,
     milestone_filter: str | None = None,
     auto_sync_if_empty: bool = False,
+    due_soon_days: int = 7,
 ) -> tuple[str | None, dict, list[dict], dict, str | None]:
     settings = db.get_settings()
     synced_at, cache_payload = db.get_sync_cache()
@@ -190,6 +191,7 @@ def _build_current_evaluation(
         milestone_filter=milestone_filter,
         zero_value_items=zero_items or [],
         zero_value_scanned=zero_scanned,
+        due_soon_days=due_soon_days,
     )
     return synced_at, evaluation, directory, settings, sync_error
 
@@ -205,6 +207,10 @@ def api_state():
     inc_today = _parse_bool_arg(request.args.get("include_due_today"))
     exc_hold = _parse_bool_arg(request.args.get("exclude_on_hold"))
     ms_filter = request.args.get("milestone") or None
+    try:
+        due_soon_days = int(request.args.get("due_soon_days") or 7)
+    except ValueError:
+        due_soon_days = 7
 
     synced_at, evaluation, directory, settings, sync_error = _build_current_evaluation(
         as_of=as_of,
@@ -212,6 +218,7 @@ def api_state():
         exclude_on_hold=exc_hold,
         milestone_filter=ms_filter,
         auto_sync_if_empty=False,
+        due_soon_days=due_soon_days,
     )
     needs_creds = not bool(
         (settings.get("scoville_email") or "").strip()
@@ -241,6 +248,10 @@ def api_sync():
     inc_today = payload.get("include_due_today")
     exc_hold = payload.get("exclude_on_hold")
     ms_filter = payload.get("milestone") or None
+    try:
+        due_soon_days = int(payload.get("due_soon_days") or 7)
+    except (TypeError, ValueError):
+        due_soon_days = 7
 
     try:
         synced_at, cache_payload, directory = perform_scoville_sync()
@@ -255,6 +266,7 @@ def api_sync():
             milestone_filter=ms_filter,
             zero_value_items=cache_payload.get("zero_value_items") or [],
             zero_value_scanned=int(cache_payload.get("zero_value_scanned") or 0),
+            due_soon_days=due_soon_days,
         )
         return jsonify(
             {

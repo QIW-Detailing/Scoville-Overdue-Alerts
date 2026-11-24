@@ -59,14 +59,17 @@
     }
 
     const activeZeroItems = zeroValueItems.filter((z) => !(excHold && z.on_hold));
+    const dueSoonDays = Math.max(1, Math.min(365, Number(params.due_soon_days) || 7));
     const evaluatedItems = [];
     const overdueItems = [];
+    const dueSoonItems = [];
     const milestoneCounts = {};
     milestones.forEach((m) => {
       milestoneCounts[m.key] = 0;
     });
     let allOverdueItemsUnfilteredCount = 0;
     let dueSoonCount = 0;
+    let dueSoonMilestonesTotal = 0;
 
     for (const item of rawItems) {
       if (item.tekla_linked) continue;
@@ -75,6 +78,7 @@
       const evalMilestones = {};
       const allItemOverdue = [];
       const filteredItemOverdue = [];
+      const filteredItemDueSoon = [];
       let itemHasDueSoon = false;
 
       for (const m of milestones) {
@@ -87,6 +91,7 @@
         const status = rawM.status || "unscheduled";
         const isoDt = rawM.date || null;
         let daysOverdue = null;
+        let daysUntil = null;
         let isOverdue = false;
         let isDueToday = false;
         let isDueSoon = false;
@@ -94,15 +99,17 @@
         if (status === "scheduled" && isoDt) {
           const delta = daysBetween(refIso, isoDt);
           daysOverdue = delta;
+          daysUntil = -delta;
           isDueToday = delta === 0;
           isOverdue = incToday ? delta >= 0 : delta > 0;
-          if (!isOverdue && delta >= -3 && delta <= 0) {
+          if (!isOverdue && daysUntil >= 0 && daysUntil <= dueSoonDays) {
             isDueSoon = true;
           }
         }
 
         if (isDueSoon && (!msFilter || msFilter === mKey)) {
           itemHasDueSoon = true;
+          dueSoonMilestonesTotal++;
         }
 
         const enriched = {
@@ -115,11 +122,15 @@
           date: isoDt,
           display: rawM.display || "—",
           days_overdue: daysOverdue,
+          days_until: daysUntil,
           is_overdue: isOverdue,
           is_due_today: isDueToday,
           is_due_soon: isDueSoon,
         };
         evalMilestones[mKey] = enriched;
+        if (isDueSoon && !isZeroMode && (!msFilter || msFilter === mKey)) {
+          filteredItemDueSoon.push(enriched);
+        }
         if (isOverdue) {
           milestoneCounts[mKey] = (milestoneCounts[mKey] || 0) + 1;
           allItemOverdue.push(enriched);
@@ -148,20 +159,31 @@
         (acc, m) => Math.max(acc, m.days_overdue || 0),
         0
       );
+      const minDaysUntil = filteredItemDueSoon.reduce(
+        (acc, m) => (m.days_until !== null && m.days_until < acc ? m.days_until : acc),
+        9999
+      );
 
       const enrichedItem = {
         ...item,
         milestones: evalMilestones,
         overdue_milestones: filteredItemOverdue,
+        due_soon_milestones: filteredItemDueSoon,
         overdue_count: filteredItemOverdue.length,
+        due_soon_count: filteredItemDueSoon.length,
         is_overdue: filteredItemOverdue.length > 0,
+        is_due_soon: filteredItemDueSoon.length > 0,
         has_ps_overdue: hasPsOverdue,
         max_days_overdue: maxDays,
+        min_days_until: minDaysUntil,
         notify_recipients: notifyRoles,
       };
       evaluatedItems.push(enrichedItem);
       if (enrichedItem.is_overdue) overdueItems.push(enrichedItem);
+      if (enrichedItem.is_due_soon) dueSoonItems.push(enrichedItem);
     }
+
+    dueSoonItems.sort((a, b) => a.min_days_until - b.min_days_until || Number(a.qkey) - Number(b.qkey));
 
     const allMilestonesSum = Object.values(milestoneCounts).reduce((a, b) => a + b, 0);
 
@@ -267,10 +289,14 @@
           zero_value_released_count: activeZeroItems.filter((z) => z.released).length,
           zero_value_unreleased_count: activeZeroItems.filter((z) => !z.released).length,
           recipients_to_email: packets.length,
+          due_soon_days: dueSoonDays,
+          due_soon_count: 0,
+          due_soon_milestones_total: 0,
           due_soon_3d_count: 0,
         },
         items: zeroEnriched,
         overdue_items: zeroEnriched,
+        due_soon_items: [],
         packets,
       };
     }
@@ -395,10 +421,14 @@
         zero_value_released_count: activeZeroItems.filter((z) => z.released).length,
         zero_value_unreleased_count: activeZeroItems.filter((z) => !z.released).length,
         recipients_to_email: packets.length,
+        due_soon_days: dueSoonDays,
+        due_soon_count: dueSoonCount,
+        due_soon_milestones_total: dueSoonMilestonesTotal,
         due_soon_3d_count: dueSoonCount,
       },
       items: evaluatedItems,
       overdue_items: overdueItems,
+      due_soon_items: dueSoonItems,
       packets,
     };
   }
