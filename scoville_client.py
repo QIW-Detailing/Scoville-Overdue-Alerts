@@ -69,6 +69,8 @@ class _ScovilleTableParser(HTMLParser):
                 "has_exclamation": False,
                 "href": "",
             }
+        elif self.in_th and t in ("div", "br", "p"):
+            self._cur_th.append(" ")
         elif self.in_td and self._cur_cell is not None:
             if t in ("div", "br", "p"):
                 self._cur_cell["text_parts"].append("\n")
@@ -119,23 +121,41 @@ class _ScovilleTableParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self.in_th:
             self._cur_th.append(data)
+        elif self.in_th and t in ("div", "br", "p"):
+            self._cur_th.append(" ")
         elif self.in_td and self._cur_cell is not None:
             self._cur_cell["text_parts"].append(data)
 
 
 class _EditPageParser(HTMLParser):
-    """Extracts <input> values and checkbox states from /item/<QKEY>/edit."""
+    """Extracts <input> values, checkbox states, and DPM/PS labels from /item/<QKEY>/edit."""
 
     def __init__(self) -> None:
         super().__init__()
         self.inputs_by_name: dict[str, dict] = {}
         self.inputs_by_id: dict[str, dict] = {}
+        self.dpm_name: str = ""
+        self.ps_name: str = ""
+        self._in_cat_td = False
+        self._in_data_td = False
+        self._cur_td_text: list[str] = []
+        self._last_cat_label: str = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() != "input":
+        t = tag.lower()
+        attr_map = {k.lower(): (v or "") for k, v in attrs}
+        if t == "td":
+            cls = attr_map.get("class", "")
+            if "edittablecategory" in cls.lower():
+                self._in_cat_td = True
+                self._cur_td_text = []
+            elif "edittabledata" in cls.lower():
+                self._in_data_td = True
+                self._cur_td_text = []
+            return
+        if t != "input":
             return
         attr_keys = {k.lower() for k, _ in attrs}
-        attr_map = {k.lower(): (v or "") for k, v in attrs}
         info = {
             "type": attr_map.get("type", "").lower(),
             "value": attr_map.get("value", "").strip(),
@@ -147,6 +167,25 @@ class _EditPageParser(HTMLParser):
             self.inputs_by_name[name] = info
         if el_id:
             self.inputs_by_id[el_id] = info
+
+    def handle_data(self, data: str) -> None:
+        if self._in_cat_td or self._in_data_td:
+            self._cur_td_text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() != "td":
+            return
+        if self._in_cat_td:
+            self._in_cat_td = False
+            self._last_cat_label = re.sub(r"\s+", " ", "".join(self._cur_td_text)).strip().lower()
+        elif self._in_data_td:
+            self._in_data_td = False
+            val = re.sub(r"\s+", " ", "".join(self._cur_td_text)).strip()
+            if self._last_cat_label.startswith("dpm") and val and not self.dpm_name:
+                self.dpm_name = val
+            elif self._last_cat_label.startswith("ps") and val and not self.ps_name:
+                self.ps_name = val
+            self._last_cat_label = ""
 
 
 class _ForecastValuesParser(HTMLParser):
@@ -288,11 +327,13 @@ def _parse_milestone_cell(cell: dict | None) -> dict:
     return {"status": "unscheduled", "date": None, "display": "Unscheduled"}
 
 
-def _extract_edit_milestones(html_text: str, tekla_linked: bool = False) -> dict[str, dict] | None:
+def _extract_edit_details(
+    html_text: str, tekla_linked: bool = False
+) -> tuple[dict[str, dict] | None, bool, str, str]:
     p = _EditPageParser()
     p.feed(html_text)
     if not p.inputs_by_name and not p.inputs_by_id:
-        return None
+        return None, False, "", ""
 
     is_linked = tekla_linked or (
         "CKBXdwgComplete" not in p.inputs_by_name and "dwgComplete" not in p.inputs_by_id
@@ -322,7 +363,7 @@ def _extract_edit_milestones(html_text: str, tekla_linked: bool = False) -> dict
         else build_field("updated[psRequestedDeliveryDate]", None, None, date_id="psReqDateCheck")
     )
 
-    return {
+    milestones = {
         "fm": build_field("updated[fmDate]", "CKBXneedFM", "needFM"),
         "dwg_complete": build_field("updated[dwgCompleteDate]", "CKBXdwgComplete", "dwgComplete"),
         "engineer_calcs": build_field("updated[dpmReviewDate]", "CKBXdpmReview", "dpmReview"),
@@ -330,6 +371,12 @@ def _extract_edit_milestones(html_text: str, tekla_linked: bool = False) -> dict
         "release_to_shop": build_field("updated[releaseDate]", None, None, date_id="releaseDateCheck"),
         "ps_request": ps_req,
     }
+    return milestones, is_linked, p.dpm_name, p.ps_name
+
+
+def _extract_edit_milestones(html_text: str, tekla_linked: bool = False) -> dict[str, dict] | None:
+    ms, _, _, _ = _extract_edit_details(html_text, tekla_linked=tekla_linked)
+    return ms
 
 
 def _clean_cat_sub(cell: dict | None) -> tuple[str, str]:
@@ -376,6 +423,7 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
     )
     resp_login.raise_for_status()
 
+    is_my_view = False
     outlook_url = f"{base}/any_due_date/weeks/500"
     resp = session.get(outlook_url, allow_redirects=True, timeout=timeout)
     resp.raise_for_status()
@@ -384,6 +432,16 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
         raise RuntimeError(
             "Scoville login failed — redirected back to /login. Please verify Scoville email & password in Settings."
         )
+
+    if "/accessdenied" in resp.url.lower() or "not authorized" in resp.text.lower():
+        # Non-admin DPM/PS account: fall back automatically to /my/ routes!
+        is_my_view = True
+        resp = session.get(f"{base}/my/any_due_date/weeks/500", allow_redirects=True, timeout=timeout)
+        resp.raise_for_status()
+        if "/login" in resp.url.lower() and "loginform" in resp.text.lower():
+            raise RuntimeError(
+                "Scoville login failed — redirected back to /login. Please verify Scoville email & password in Settings."
+            )
 
     parser = _ScovilleTableParser()
     parser.feed(resp.text)
@@ -472,14 +530,21 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
             },
         }
 
-    # Pass 2: /release_to_shop/all — populates `PS Request Date`
+    # Pass 2: /release_to_shop/all (or /my/release_to_shop/all for non-admin users)
+    # Populates `PS Request Date` AND fills in DPM/PS names (`PS/DPM` = "<DPM> / <PS>") on /my/ views!
     try:
-        all_resp = session.get(f"{base}/release_to_shop/all", allow_redirects=True, timeout=timeout)
-        if all_resp.ok and "/login" not in all_resp.url.lower():
+        rts_path = "/my/release_to_shop/all" if is_my_view else "/release_to_shop/all"
+        all_resp = session.get(f"{base}{rts_path}", allow_redirects=True, timeout=timeout)
+        if not is_my_view and ("/accessdenied" in all_resp.url.lower() or "not authorized" in all_resp.text.lower()):
+            is_my_view = True
+            all_resp = session.get(f"{base}/my/release_to_shop/all", allow_redirects=True, timeout=timeout)
+
+        if all_resp.ok and "/login" not in all_resp.url.lower() and "/accessdenied" not in all_resp.url.lower():
             p2 = _ScovilleTableParser()
             p2.feed(all_resp.text)
             h2 = {h.lower(): idx for idx, h in enumerate(p2.headers)}
             ps_req_idx = h2.get("ps request date", 15)
+            psdpm_idx = h2.get("ps/dpm")
 
             for row in p2.rows:
                 cells = row["cells"]
@@ -492,10 +557,23 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
                 if on_hold:
                     on_hold_qkeys.add(qkey)
 
+                # Extract DPM & PS either from separate columns (admin) or combined `PS/DPM` ("DPM / PS" on /my/)
+                row_dpm = ""
+                row_ps = ""
+                if psdpm_idx is not None and 0 <= psdpm_idx < len(cells):
+                    psdpm_txt = cells[psdpm_idx]["text"].strip()
+                    if "/" in psdpm_txt:
+                        d_part, p_part = psdpm_txt.split("/", 1)
+                        row_dpm = d_part.strip()
+                        row_ps = p_part.strip()
+                    elif psdpm_txt:
+                        row_dpm = psdpm_txt
+                else:
+                    row_ps = cells[10]["text"].strip() if len(cells) > 10 else ""
+                    row_dpm = cells[11]["text"].strip() if len(cells) > 11 else ""
+
                 ps_req_cell = cells[ps_req_idx] if 0 <= ps_req_idx < len(cells) else None
                 if qkey not in items_by_qkey:
-                    ps_name = cells[10]["text"].strip() if len(cells) > 10 else ""
-                    dpm_name = cells[11]["text"].strip() if len(cells) > 11 else ""
                     items_by_qkey[qkey] = {
                         "qkey": qkey,
                         "priority": cells[0]["text"].strip(),
@@ -507,8 +585,8 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
                         "category": cells[4]["text"].strip(),
                         "sub_category": cells[5]["text"].strip(),
                         "sequence": cells[6]["text"].strip(),
-                        "dpm": dpm_name or "Unassigned",
-                        "ps": ps_name or "Unassigned",
+                        "dpm": row_dpm or "Unassigned",
+                        "ps": row_ps or "Unassigned",
                         "value": cells[12]["text"].strip() if len(cells) > 12 else "",
                         "edit_url": f"{base}/item/{qkey}/edit",
                         "milestones": {
@@ -520,6 +598,11 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
                             "ps_request": {"status": "unscheduled", "date": None, "display": "Unscheduled"},
                         },
                     }
+                else:
+                    if row_dpm and items_by_qkey[qkey]["dpm"] == "Unassigned":
+                        items_by_qkey[qkey]["dpm"] = row_dpm
+                    if row_ps and items_by_qkey[qkey]["ps"] == "Unassigned":
+                        items_by_qkey[qkey]["ps"] = row_ps
 
                 if ps_req_cell:
                     if ps_req_cell.get("has_exclamation"):
@@ -535,7 +618,7 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
 
     try:
         noval_resp = session.get(f"{base}/noValue", allow_redirects=True, timeout=timeout)
-        if noval_resp.ok and "/login" not in noval_resp.url.lower():
+        if noval_resp.ok and "/login" not in noval_resp.url.lower() and "/accessdenied" not in noval_resp.url.lower():
             pnv = _ScovilleTableParser()
             pnv.feed(noval_resp.text)
             hnv = {h.lower(): idx for idx, h in enumerate(pnv.headers)}
@@ -574,72 +657,108 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
     except Exception:
         pass
 
-    try:
-        adm_resp = session.get(f"{base}/admin/all", allow_redirects=True, timeout=timeout)
-        if adm_resp.ok and "/login" not in adm_resp.url.lower():
-            p3 = _ScovilleTableParser()
-            p3.feed(adm_resp.text)
-            h3 = {h.lower(): idx for idx, h in enumerate(p3.headers)}
-            q_idx = h3.get("qkey", 0)
-            lot_idx = h3.get("lot #", 6)
-            val_idx = h3.get("value", 14)
-            ps_idx = h3.get("ps", 12)
-            dpm_idx = h3.get("dpm", 13)
+    # Also capture any $0 items present directly in items_by_qkey (especially for /my/ scoped accounts)
+    for qk, it in items_by_qkey.items():
+        if _is_zero_dollar_value(it.get("value", "")) and qk not in zero_candidates:
+            zero_candidates[qk] = {
+                "qkey": qk,
+                "on_hold": bool(it.get("on_hold")),
+                "released": False,
+                "lot_number": "",
+                "job_number": it.get("job_number", ""),
+                "job_site": it.get("job_site", ""),
+                "category": it.get("category", ""),
+                "sub_category": it.get("sub_category", ""),
+                "sequence": it.get("sequence", ""),
+                "dpm": it.get("dpm", "Unassigned"),
+                "ps": it.get("ps", "Unassigned"),
+                "value": it.get("value") or "$0",
+                "edit_url": f"{base}/item/{qk}/edit",
+                "forecast_url": f"{base}/item/{qk}/forecastValues",
+            }
 
-            for row in p3.rows:
-                cells = row["cells"]
-                if len(cells) <= max(lot_idx, q_idx, val_idx):
-                    continue
-                qkey = cells[q_idx]["text"].strip()
-                if not qkey.isdigit():
-                    continue
-                on_hold = "onhold" in row.get("tr_class", "").lower()
-                if on_hold:
-                    on_hold_qkeys.add(qkey)
+    if not is_my_view:
+        try:
+            adm_resp = session.get(f"{base}/admin/all", allow_redirects=True, timeout=timeout)
+            if adm_resp.ok and "/login" not in adm_resp.url.lower() and "/accessdenied" not in adm_resp.url.lower():
+                p3 = _ScovilleTableParser()
+                p3.feed(adm_resp.text)
+                h3 = {h.lower(): idx for idx, h in enumerate(p3.headers)}
+                q_idx = h3.get("qkey", 0)
+                lot_idx = h3.get("lot #", 6)
+                val_idx = h3.get("value", 14)
+                ps_idx = h3.get("ps", 12)
+                dpm_idx = h3.get("dpm", 13)
 
-                lot_num = cells[lot_idx]["text"].strip()
-                val_txt = cells[val_idx]["text"].strip()
+                for row in p3.rows:
+                    cells = row["cells"]
+                    if len(cells) <= max(lot_idx, q_idx, val_idx):
+                        continue
+                    qkey = cells[q_idx]["text"].strip()
+                    if not qkey.isdigit():
+                        continue
+                    on_hold = "onhold" in row.get("tr_class", "").lower()
+                    if on_hold:
+                        on_hold_qkeys.add(qkey)
 
-                if qkey in items_by_qkey and lot_num:
-                    items_by_qkey[qkey]["lot_number"] = lot_num
-                    items_by_qkey[qkey]["tekla_linked"] = True
+                    lot_num = cells[lot_idx]["text"].strip()
+                    val_txt = cells[val_idx]["text"].strip()
 
-                # Enrich $0 candidates from /noValue with Lot # / released status
-                # (only fall back to adding from /admin/all if /noValue returned nothing)
-                if qkey in zero_candidates:
-                    zero_candidates[qkey]["lot_number"] = lot_num
-                    zero_candidates[qkey]["released"] = bool(lot_num)
-                    zero_candidates[qkey]["on_hold"] = qkey in on_hold_qkeys
-                elif not zero_candidates and _is_zero_dollar_value(val_txt):
-                    zero_candidates[qkey] = {
-                        "qkey": qkey,
-                        "on_hold": qkey in on_hold_qkeys,
-                        "released": bool(lot_num),
-                        "lot_number": lot_num,
-                        "job_number": cells[h3.get("job #", 1)]["text"].strip(),
-                        "job_site": cells[h3.get("job site", 2)]["text"].strip(),
-                        "category": cells[h3.get("category", 3)]["text"].strip(),
-                        "sub_category": cells[h3.get("sub category", 4)]["text"].strip(),
-                        "sequence": cells[h3.get("seq", 5)]["text"].strip(),
-                        "dpm": (cells[dpm_idx]["text"].strip() if dpm_idx < len(cells) else "") or "Unassigned",
-                        "ps": (cells[ps_idx]["text"].strip() if ps_idx < len(cells) else "") or "Unassigned",
-                        "value": val_txt or "$0",
-                        "edit_url": f"{base}/item/{qkey}/edit",
-                        "forecast_url": f"{base}/item/{qkey}/forecastValues",
-                    }
-    except Exception:
-        pass
+                    if qkey in items_by_qkey and lot_num:
+                        items_by_qkey[qkey]["lot_number"] = lot_num
+                        items_by_qkey[qkey]["tekla_linked"] = True
+
+                    if qkey in zero_candidates:
+                        zero_candidates[qkey]["lot_number"] = lot_num
+                        zero_candidates[qkey]["released"] = bool(lot_num)
+                        zero_candidates[qkey]["on_hold"] = qkey in on_hold_qkeys
+                    elif not zero_candidates and _is_zero_dollar_value(val_txt):
+                        zero_candidates[qkey] = {
+                            "qkey": qkey,
+                            "on_hold": qkey in on_hold_qkeys,
+                            "released": bool(lot_num),
+                            "lot_number": lot_num,
+                            "job_number": cells[h3.get("job #", 1)]["text"].strip(),
+                            "job_site": cells[h3.get("job site", 2)]["text"].strip(),
+                            "category": cells[h3.get("category", 3)]["text"].strip(),
+                            "sub_category": cells[h3.get("sub category", 4)]["text"].strip(),
+                            "sequence": cells[h3.get("seq", 5)]["text"].strip(),
+                            "dpm": (cells[dpm_idx]["text"].strip() if dpm_idx < len(cells) else "") or "Unassigned",
+                            "ps": (cells[ps_idx]["text"].strip() if ps_idx < len(cells) else "") or "Unassigned",
+                            "value": val_txt or "$0",
+                            "edit_url": f"{base}/item/{qkey}/edit",
+                            "forecast_url": f"{base}/item/{qkey}/forecastValues",
+                        }
+        except Exception:
+            pass
+    else:
+        # For non-admin users, check /viewShopWIP if permitted to mark Tekla-linked QKEYs
+        try:
+            wip_resp = session.get(f"{base}/viewShopWIP", allow_redirects=True, timeout=timeout)
+            if wip_resp.ok and "/login" not in wip_resp.url.lower() and "/accessdenied" not in wip_resp.url.lower():
+                pwip = _ScovilleTableParser()
+                pwip.feed(wip_resp.text)
+                hwip = {h.lower(): idx for idx, h in enumerate(pwip.headers)}
+                wq_idx = hwip.get("qkey", 4)
+                for row in pwip.rows:
+                    cells = row["cells"]
+                    if wq_idx < len(cells):
+                        wqk = cells[wq_idx]["text"].strip()
+                        if wqk in items_by_qkey:
+                            items_by_qkey[wqk]["tekla_linked"] = True
+        except Exception:
+            pass
 
     # Remove Tekla-linked items from date-overdue tracking
     for qk in [k for k, v in items_by_qkey.items() if v.get("tekla_linked")]:
         del items_by_qkey[qk]
 
-    # Pass 4: Thread-safe parallel fetch of `/item/<QKEY>/edit` (for hidden past-due dates)
-    # Each worker thread owns an isolated Session so a redirect never clobbers another thread!
+    # Pass 4: Thread-safe parallel fetch of `/item/<QKEY>/edit` (for hidden past-due dates & DPM/PS/Tekla verification)
     qkeys_to_inspect = [
         qkey
         for qkey, it in items_by_qkey.items()
         if qkey in ps_req_needs_edit_lookup
+        or it.get("dpm") == "Unassigned"
         or any(it["milestones"][k]["status"] == "unscheduled" for k in DETAILING_CALENDAR_KEYS)
     ]
 
@@ -656,7 +775,7 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
             _tls.session = ws
         return ws
 
-    def _fetch_one_edit(qkey: str) -> tuple[str, dict[str, dict] | None]:
+    def _fetch_one_edit(qkey: str) -> tuple[str, dict[str, dict] | None, bool, str, str]:
         ws = _get_worker_session()
         for _ in range(2):
             try:
@@ -664,26 +783,48 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
                 if "/login" in r.url.lower():
                     ws.post(login_url, data={"email": email, "password": password}, allow_redirects=True, timeout=timeout)
                     continue
+                if "/accessdenied" in r.url.lower():
+                    return qkey, None, False, "", ""
                 if r.ok:
-                    ms = _extract_edit_milestones(r.text, tekla_linked=False)
+                    ms, is_linked, e_dpm, e_ps = _extract_edit_details(r.text, tekla_linked=False)
                     if ms is not None:
-                        return qkey, ms
+                        return qkey, ms, is_linked, e_dpm, e_ps
             except Exception:
                 pass
-        return qkey, None
+        return qkey, None, False, "", ""
 
     if qkeys_to_inspect:
         with ThreadPoolExecutor(max_workers=5) as pool:
             edit_futs = [pool.submit(_fetch_one_edit, q) for q in qkeys_to_inspect]
             for fut in as_completed(edit_futs):
-                qkey, exact_ms = fut.result()
-                if exact_ms and qkey in items_by_qkey:
-                    items_by_qkey[qkey]["milestones"] = exact_ms
+                qkey, exact_ms, is_linked, e_dpm, e_ps = fut.result()
+                if qkey in items_by_qkey:
+                    if is_linked:
+                        items_by_qkey[qkey]["tekla_linked"] = True
+                    if exact_ms:
+                        items_by_qkey[qkey]["milestones"] = exact_ms
+                    if e_dpm:
+                        items_by_qkey[qkey]["dpm"] = e_dpm
+                    if e_ps:
+                        items_by_qkey[qkey]["ps"] = e_ps
+
+    # Remove any items discovered to be Tekla-linked during /edit inspection
+    for qk in [k for k, v in items_by_qkey.items() if v.get("tekla_linked")]:
+        del items_by_qkey[qk]
+
+    # For non-admin (/my/) users, scope $0 candidates to their own accessible jobs/DPMs
+    if is_my_view and items_by_qkey:
+        my_dpms = {it["dpm"].lower() for it in items_by_qkey.values() if it.get("dpm") and it["dpm"] != "Unassigned"}
+        my_jobs = {it["job_number"] for it in items_by_qkey.values() if it.get("job_number")}
+        zero_candidates = {
+            qk: cand
+            for qk, cand in zero_candidates.items()
+            if qk in items_by_qkey
+            or cand.get("dpm", "").lower() in my_dpms
+            or (cand.get("job_number") and cand["job_number"] in my_jobs)
+        }
 
     # Pass 5: Reliable sequential `/item/<QKEY>/forecastValues` scan grouped by `Job #`!
-    # All $0 items on the same Job # share the exact same job Scope Items & Values dropdown,
-    # so checking per Job # (~11 requests instead of 135) is instant, never overloads Scoville,
-    # and automatically re-authenticates if any QKEY redirects to /login!
     cands_by_job: dict[str, list[dict]] = {}
     for cand in zero_candidates.values():
         j_key = (cand.get("job_number") or "").strip() or f"_qkey_{cand['qkey']}"
@@ -705,6 +846,8 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
                     if "/login" in r.url.lower():
                         session.post(login_url, data={"email": email, "password": password}, allow_redirects=True, timeout=timeout)
                         continue
+                    if "/accessdenied" in r.url.lower():
+                        break
                     if r.ok:
                         valid_page, scopes = _extract_real_scope_options(r.text)
                         if valid_page:
@@ -731,6 +874,7 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
         "items": sorted(items_by_qkey.values(), key=lambda x: int(x["qkey"])),
         "zero_value_items": caught_zero_items,
         "zero_value_scanned": len(zero_candidates),
+        "is_scoped_user": is_my_view,
     }
 
 

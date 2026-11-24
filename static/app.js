@@ -1,4 +1,4 @@
-const FRONTEND_APP_VERSION = 13;
+const FRONTEND_APP_VERSION = 14;
 const IS_GITHUB_PAGES =
   window.location.protocol === "https:" || window.location.hostname.endsWith("github.io");
 const IS_REMOTE_CLIENT =

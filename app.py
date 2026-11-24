@@ -37,8 +37,8 @@ _sync_lock = threading.Lock()
 
 
 def write_public_snapshot(synced_at: str | None, cache_payload: dict, directory: list[dict]) -> None:
-    """Writes a password-free snapshot.json when running from the repo folder."""
-    if IS_FROZEN or not synced_at:
+    """Writes a password-free snapshot.json when running from the repo folder (full admin syncs only)."""
+    if IS_FROZEN or not synced_at or cache_payload.get("is_scoped_user"):
         return
     try:
         snap_path = os.path.join(RESOURCE_DIR, "snapshot.json")
@@ -149,8 +149,8 @@ def _build_current_evaluation(
     zero_scanned = int(cache_payload.get("zero_value_scanned") or 0)
     sync_error = None
 
-    # On a fresh colleague PC install, warm-seed cache from bundled snapshot.json so UI loads instantly
-    if not raw_items:
+    # On a fresh colleague PC install (before their first sync), warm-seed cache from bundled snapshot.json
+    if not raw_items and not synced_at:
         snap_path = os.path.join(RESOURCE_DIR, "snapshot.json")
         if os.path.isfile(snap_path):
             try:
@@ -227,7 +227,7 @@ def api_state():
     return jsonify(
         {
             "ok": True,
-            "app_version": 13,
+            "app_version": 14,
             "today": date.today().isoformat(),
             "synced_at": synced_at,
             "sync_error": sync_error,
