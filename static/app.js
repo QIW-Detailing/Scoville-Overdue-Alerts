@@ -1,3 +1,4 @@
+const FRONTEND_APP_VERSION = 13;
 const IS_GITHUB_PAGES =
   window.location.protocol === "https:" || window.location.hostname.endsWith("github.io");
 const IS_REMOTE_CLIENT =
@@ -180,7 +181,17 @@ async function loadState(preserveDate = false) {
     state.staticMode = false;
     state.needsCredentials = Boolean(data.needs_credentials);
     const dlBtn = document.getElementById("btnDownloadHelper");
-    if (dlBtn) dlBtn.style.display = "none";
+    if (dlBtn) {
+      const serverVer = Number(data.app_version || 0);
+      dlBtn.style.display = "inline-flex";
+      if (serverVer < FRONTEND_APP_VERSION) {
+        dlBtn.innerHTML = "&#x2B06; Update PC Helper (.zip)";
+        dlBtn.title = "A newer version of the PC Helper is available — click to download & run Setup-This-PC.bat";
+      } else {
+        dlBtn.innerHTML = "&#x2B07; PC Live-Sync Helper (.zip)";
+        dlBtn.title = "Download the PC Live-Sync Helper (.zip) for another computer or to reinstall";
+      }
+    }
 
     state.today = data.today;
     state.syncedAt = data.synced_at;

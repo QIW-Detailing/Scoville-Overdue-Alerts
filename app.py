@@ -227,6 +227,7 @@ def api_state():
     return jsonify(
         {
             "ok": True,
+            "app_version": 13,
             "today": date.today().isoformat(),
             "synced_at": synced_at,
             "sync_error": sync_error,
