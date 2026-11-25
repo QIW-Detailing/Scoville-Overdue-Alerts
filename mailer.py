@@ -364,10 +364,13 @@ def _render_missing_bom_packet_email(packet: dict, settings: dict, as_of_display
     grouped_jobs = _group_items_by_job(items)
     rows_html: list[str] = []
     plain_lines = [
-        f"Hi {person_name},",
+        f"Dear {person_name},",
         "",
-        f"MISSING BOM EMAIL — TEKLA-LINKED OVER {grace_h} HOURS WITHOUT BOM TRANSMITTAL",
-        f"Assigned DPM: {person_name} | Total Missing BOM Items: {len(items)} | Date: {as_of_display}",
+        f"MISSING BOM TRANSMITTAL — LINKED TO TEKLA OVER {grace_h} HOURS",
+        f"Assigned DPM: {person_name} | Items Pending BOM Email: {len(items)} | Date: {as_of_display}",
+        "",
+        f"Please be advised that you have not yet sent the required Bill of Materials (BOM) transmittal email to BOM@qiworks.com for the Scoville item(s) below, which were linked to Tekla over {grace_h} hours ago.",
+        "Kindly submit the BOM transmittal email (including the Job # and Transmittal/Lot # in the subject line) to BOM@qiworks.com at your earliest convenience.",
         "",
     ]
 
@@ -453,11 +456,13 @@ def _render_missing_bom_packet_email(packet: dict, settings: dict, as_of_display
       </td>
     </tr>
     <tr>
-      <td style="padding:16px 20px 12px 20px;{TNR}font-size:12pt;line-height:1.5;color:#0f172a;">
-        <p style="margin:0 0 8px 0;{TNR}font-size:12pt;">Hi <strong>{html.escape(person_name)}</strong>,</p>
+      <td style="padding:16px 20px 12px 20px;{TNR}font-size:12pt;line-height:1.55;color:#0f172a;">
+        <p style="margin:0 0 10px 0;{TNR}font-size:12pt;">Dear <strong>{html.escape(person_name)}</strong>,</p>
+        <p style="margin:0 0 10px 0;{TNR}font-size:12pt;">
+          Please be advised that you have not yet sent the required Bill of Materials (BOM) transmittal email to <strong>BOM@qiworks.com</strong> for the Scoville item(s) listed below, which were linked to Tekla over <strong>{html.escape(str(grace_h))} hours</strong> ago.
+        </p>
         <p style="margin:0;{TNR}font-size:12pt;">
-          The following items were linked to Tekla over <strong>{html.escape(str(grace_h))} hours</strong> ago, and no matching BOM transmittal email (by Job # &amp; Lot/FAB #) has been received in <strong>BOM@qiworks.com</strong> yet.
-          Please send the BOM transmittal email to <strong>BOM@qiworks.com</strong>.
+          Kindly submit the BOM transmittal email (referencing the Job # and Transmittal / Lot #) to <strong>BOM@qiworks.com</strong> at your earliest convenience so Purchasing and Shop operations can proceed without delay. Thank you for your prompt attention to this matter.
         </p>
       </td>
     </tr>
@@ -697,6 +702,7 @@ def deliver_email(
     html_body: str,
     plain_text: str,
     override_mode: str | None = None,
+    cc_override: list[str] | None = None,
 ) -> tuple[str, str, str]:
     """
     Delivers email according to delivery_mode:
@@ -709,7 +715,7 @@ def deliver_email(
     mode = (override_mode or settings.get("delivery_mode") or "outlook_send").strip()
     configured_from = (settings.get("from_email") or "").strip()
     from_name = (settings.get("from_name") or "Scoville Detailing Alerts").strip()
-    cc_emails = _parse_email_list(settings.get("cc_emails", ""))
+    cc_emails = cc_override if cc_override is not None else _parse_email_list(settings.get("cc_emails", ""))
 
     if mode == "dry_run":
         return "dry_run", "", resolve_effective_sender(settings)

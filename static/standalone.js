@@ -669,9 +669,10 @@
 <div style="${TNR}font-size:15pt;font-weight:bold;color:#ffffff;">Missing BOM Transmittal Alert</div>
 <div style="${TNR}font-size:11pt;color:#ffedd5;margin-top:3px;">Assigned DPM: <strong>${escHtml(personName)}</strong> &nbsp;&bull;&nbsp; Missing BOM Items: <strong>${items.length}</strong> &nbsp;&bull;&nbsp; Report Date: <strong>${escHtml(asOfDisplay)}</strong></div>
 </td></tr>
-<tr><td style="padding:16px 20px 12px 20px;${TNR}font-size:12pt;line-height:1.5;color:#0f172a;">
-<p style="margin:0 0 8px 0;${TNR}font-size:12pt;">Hi <strong>${escHtml(personName)}</strong>,</p>
-<p style="margin:0;${TNR}font-size:12pt;">The following items were linked to Tekla over <strong>2 hours</strong> ago, and no matching BOM transmittal email (by Job # &amp; Lot/FAB #) has been received in <strong>BOM@qiworks.com</strong> yet. Please send the BOM transmittal email to <strong>BOM@qiworks.com</strong>.</p>
+<tr><td style="padding:16px 20px 12px 20px;${TNR}font-size:12pt;line-height:1.55;color:#0f172a;">
+<p style="margin:0 0 10px 0;${TNR}font-size:12pt;">Dear <strong>${escHtml(personName)}</strong>,</p>
+<p style="margin:0 0 10px 0;${TNR}font-size:12pt;">Please be advised that you have not yet sent the required Bill of Materials (BOM) transmittal email to <strong>BOM@qiworks.com</strong> for the Scoville item(s) listed below, which were linked to Tekla over <strong>2 hours</strong> ago.</p>
+<p style="margin:0;${TNR}font-size:12pt;">Kindly submit the BOM transmittal email (referencing the Job # and Transmittal / Lot #) to <strong>BOM@qiworks.com</strong> at your earliest convenience so Purchasing and Shop operations can proceed without delay. Thank you for your prompt attention to this matter.</p>
 </td></tr>
 <tr><td style="padding:4px 20px 18px 20px;${TNR}">
 <table width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;border:1px solid #cbd5e1;${TNR}">

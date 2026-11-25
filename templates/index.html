@@ -14,7 +14,7 @@
     <div class="topbar-brand">
       <div class="brand-badge">SC</div>
       <div>
-        <h1>Scoville Overdue Alerts <span class="ver-pill">v2.6</span></h1>
+        <h1>Scoville Overdue Alerts <span class="ver-pill">v2.7</span></h1>
         <p class="subtitle">
           From: <strong id="hdrFromEmail">Local Outlook Account</strong> &middot;
           Subject: <strong id="hdrSubject">Overdues on Scoville</strong> &middot;
@@ -396,6 +396,33 @@
             <p class="hint" id="lastAutoRunHint">Last automatic run: Never</p>
           </div>
 
+          <div class="panel-card">
+            <h3>Automatic &gt;2-Hour Missing BOM Alerts</h3>
+            <p class="muted">Checks Scoville &amp; this PC's local Outlook every 10 min and automatically emails the DPM (with Manager CC'd) if no BOM email is sent within 2 hours of Tekla linking.</p>
+            <div class="form-row">
+              <label class="chk-label">
+                <input type="checkbox" id="setBomAutoEnabled" />
+                <span><strong>Enable Automatic Missing BOM Emails on This PC</strong></span>
+              </label>
+            </div>
+            <div class="two-col">
+              <div class="form-row">
+                <label>Hours After Tekla Link</label>
+                <input type="number" id="setBomGraceHours" min="0.5" max="72" step="0.5" value="2" />
+              </div>
+              <div class="form-row" style="justify-content:flex-end;">
+                <label class="chk-label">
+                  <input type="checkbox" id="setBomWorkHoursOnly" checked />
+                  <span>Work Hours Only (6 AM–6 PM Mon–Fri)</span>
+                </label>
+              </div>
+            </div>
+            <div class="form-row">
+              <label>CC Manager Email(s) on Missing BOM Alerts</label>
+              <input type="text" id="setBomCcEmails" value="bmasta@qiworks.com" placeholder="bmasta@qiworks.com" />
+            </div>
+          </div>
+
           <form class="panel-card" autocomplete="on" onsubmit="return false;">
             <h3>Scoville Connection</h3>
             <p class="muted">Read-only sync credentials for Scoville (`http://scoville:7555`).</p>
@@ -441,7 +468,7 @@
     </div>
   </div>
 
-  <script src="./static/standalone.js?v=17"></script>
-  <script src="./static/app.js?v=17"></script>
+  <script src="./static/standalone.js?v=18"></script>
+  <script src="./static/app.js?v=18"></script>
 </body>
 </html>

@@ -46,6 +46,17 @@ def _packet_subject(packet: dict, settings: dict) -> str:
     return settings.get("email_subject") or "Overdues on Scoville"
 
 
+def _packet_cc_emails(packet: dict, settings: dict) -> list[str]:
+    base_cc = _parse_email_list(settings.get("cc_emails", ""))
+    if packet.get("packet_kind") == "missing_bom":
+        bom_cc = _parse_email_list(settings.get("bom_cc_emails", "bmasta@qiworks.com"))
+        for c in bom_cc:
+            if c.lower() not in {x.lower() for x in base_cc}:
+                base_cc.append(c)
+    to_lower = {x.lower() for x in (packet.get("to_emails") or [])}
+    return [c for c in base_cc if c.lower() not in to_lower]
+
+
 def write_public_snapshot(synced_at: str | None, cache_payload: dict, directory: list[dict]) -> None:
     """Writes a password-free snapshot.json when running from the repo folder (full admin syncs only)."""
     if IS_FROZEN or not synced_at or cache_payload.get("is_scoped_user"):
@@ -98,7 +109,7 @@ def _handle_cors_preflight():
     return None
 
 
-APP_VERSION = 16
+APP_VERSION = 18
 
 
 @app.after_request
@@ -338,6 +349,7 @@ def api_preview():
         return jsonify({"ok": False, "error": "Packet not found for current filters."}), 404
 
     subj = _packet_subject(packet, settings)
+    cc_list = _packet_cc_emails(packet, settings)
     html_body, plain_text = render_packet_email(packet, settings, evaluation["as_of_display"])
     return jsonify(
         {
@@ -346,7 +358,7 @@ def api_preview():
             "recipient_name": packet["recipient_name"],
             "from_email": resolve_effective_sender(settings),
             "to_emails": packet["to_emails"],
-            "cc_emails": _parse_email_list(settings.get("cc_emails", "")),
+            "cc_emails": cc_list,
             "subject": subj,
             "html_body": html_body,
             "plain_text": plain_text,
@@ -384,7 +396,6 @@ def api_send():
     if not selected:
         return jsonify({"ok": False, "error": "No email packets matched to send."}), 400
 
-    cc_emails = _parse_email_list(settings.get("cc_emails", ""))
     used_mode = override_mode or settings.get("delivery_mode", "outlook_send")
 
     results = []
@@ -393,6 +404,7 @@ def api_send():
 
     for pkt in selected:
         subj = _packet_subject(pkt, settings)
+        pkt_cc = _packet_cc_emails(pkt, settings)
         html_body, plain_text = render_packet_email(pkt, settings, evaluation["as_of_display"])
         status, err_msg, actual_from = deliver_email(
             settings=settings,
@@ -401,11 +413,12 @@ def api_send():
             html_body=html_body,
             plain_text=plain_text,
             override_mode=used_mode,
+            cc_override=pkt_cc,
         )
         log_id = db.add_email_log(
             recipient_label=pkt["recipient_name"],
             to_emails=pkt["to_emails"],
-            cc_emails=cc_emails,
+            cc_emails=pkt_cc,
             from_email=actual_from,
             subject=subj,
             delivery_mode=used_mode,
@@ -415,6 +428,19 @@ def api_send():
             html_body=html_body,
             error_message=err_msg,
         )
+        if status != "error" and pkt.get("packet_kind") == "missing_bom" and used_mode != "outlook_draft":
+            db.mark_bom_alerted(
+                [
+                    {
+                        "job_lot_key": it.get("job_lot_key") or "",
+                        "job_number": it.get("job_number") or "",
+                        "lot_number": it.get("lot_number") or "",
+                        "qkey": it.get("qkey") or "",
+                        "recipient_email": ", ".join(pkt["to_emails"]),
+                    }
+                    for it in (pkt.get("items") or [])
+                ]
+            )
         if status == "error":
             error_count += 1
         else:
@@ -574,13 +600,16 @@ def api_delete_log(log_id: int):
 
 
 def _scheduler_loop() -> None:
-    """Background daily auto-send loop."""
+    """Background daily auto-send loop + 10-minute automatic >2h Missing BOM watcher."""
+    last_bom_check_ts = 0.0
     while True:
         try:
             settings = db.get_settings()
+            now = datetime.now()
+            today_iso = now.date().isoformat()
+
+            # 1) Automatic Daily Schedule (Overdue Schedule Dates)
             if settings.get("schedule_enabled"):
-                now = datetime.now()
-                today_iso = now.date().isoformat()
                 weekdays_only = bool(settings.get("schedule_weekdays_only", True))
                 is_valid_day = (now.weekday() < 5) if weekdays_only else True
 
@@ -588,7 +617,6 @@ def _scheduler_loop() -> None:
                 now_hm = now.strftime("%H:%M")
 
                 if is_valid_day and now_hm >= sched_time and settings.get("last_auto_run_date") != today_iso:
-                    # Mark run date first to avoid duplicate firing
                     db.update_settings({"last_auto_run_date": today_iso})
                     _, cache_payload, directory = perform_scoville_sync()
                     settings = db.get_settings()
@@ -599,10 +627,10 @@ def _scheduler_loop() -> None:
                         as_of_iso=today_iso,
                     )
                     subject = settings.get("email_subject", "Overdues on Scoville")
-                    cc_emails = _parse_email_list(settings.get("cc_emails", ""))
                     mode = settings.get("delivery_mode", "outlook_send")
 
                     for pkt in evaluation["packets"]:
+                        pkt_cc = _packet_cc_emails(pkt, settings)
                         html_body, plain_text = render_packet_email(pkt, settings, evaluation["as_of_display"])
                         status, err_msg, actual_from = deliver_email(
                             settings=settings,
@@ -611,11 +639,12 @@ def _scheduler_loop() -> None:
                             html_body=html_body,
                             plain_text=plain_text,
                             override_mode=mode,
+                            cc_override=pkt_cc,
                         )
                         db.add_email_log(
                             recipient_label=f"[Auto] {pkt['recipient_name']}",
                             to_emails=pkt["to_emails"],
-                            cc_emails=cc_emails,
+                            cc_emails=pkt_cc,
                             from_email=actual_from,
                             subject=subject,
                             delivery_mode=mode,
@@ -625,6 +654,91 @@ def _scheduler_loop() -> None:
                             html_body=html_body,
                             error_message=err_msg,
                         )
+
+            # 2) Automatic >2-Hour Missing BOM Watcher (runs every 10 minutes when enabled)
+            if settings.get("bom_auto_enabled"):
+                now_ts = time.time()
+                in_work_hours = True
+                if settings.get("bom_work_hours_only", True):
+                    in_work_hours = (now.weekday() < 5) and (6 <= now.hour < 18)
+
+                has_creds = bool(
+                    (settings.get("scoville_email") or "").strip()
+                    and (settings.get("scoville_password") or "").strip()
+                )
+
+                if in_work_hours and has_creds and (now_ts - last_bom_check_ts >= 600):
+                    last_bom_check_ts = now_ts
+                    _, cache_payload, directory = perform_scoville_sync()
+                    settings = db.get_settings()
+                    bom_eval = evaluate_items_and_packets(
+                        raw_items=cache_payload.get("items") or [],
+                        directory=directory,
+                        settings=settings,
+                        as_of_iso=today_iso,
+                        milestone_filter="missing_bom",
+                        zero_value_items=cache_payload.get("zero_value_items") or [],
+                        zero_value_scanned=int(cache_payload.get("zero_value_scanned") or 0),
+                        tekla_recent_items=cache_payload.get("tekla_recent_items") or [],
+                        bom_seen_keys=db.get_bom_seen_map(),
+                    )
+                    already_alerted = db.get_bom_alerted_keys()
+                    mode = settings.get("delivery_mode", "outlook_send")
+
+                    for pkt in bom_eval.get("packets") or []:
+                        unalerted_items = [
+                            it
+                            for it in (pkt.get("items") or [])
+                            if (it.get("job_lot_key") or "") not in already_alerted
+                        ]
+                        if not unalerted_items:
+                            continue
+
+                        auto_pkt = {
+                            **pkt,
+                            "items": unalerted_items,
+                            "item_count": len(unalerted_items),
+                            "milestone_count": len(unalerted_items),
+                            "qkeys": [x["qkey"] for x in unalerted_items],
+                        }
+                        subj = _packet_subject(auto_pkt, settings)
+                        pkt_cc = _packet_cc_emails(auto_pkt, settings)
+                        html_body, plain_text = render_packet_email(auto_pkt, settings, bom_eval["as_of_display"])
+                        status, err_msg, actual_from = deliver_email(
+                            settings=settings,
+                            to_emails=auto_pkt["to_emails"],
+                            subject=subj,
+                            html_body=html_body,
+                            plain_text=plain_text,
+                            override_mode=mode,
+                            cc_override=pkt_cc,
+                        )
+                        db.add_email_log(
+                            recipient_label=f"[Auto-BOM] {auto_pkt['recipient_name']}",
+                            to_emails=auto_pkt["to_emails"],
+                            cc_emails=pkt_cc,
+                            from_email=actual_from,
+                            subject=subj,
+                            delivery_mode=mode,
+                            status=status,
+                            item_count=auto_pkt["item_count"],
+                            qkeys=auto_pkt["qkeys"],
+                            html_body=html_body,
+                            error_message=err_msg,
+                        )
+                        if status == "sent":
+                            db.mark_bom_alerted(
+                                [
+                                    {
+                                        "job_lot_key": it.get("job_lot_key") or "",
+                                        "job_number": it.get("job_number") or "",
+                                        "lot_number": it.get("lot_number") or "",
+                                        "qkey": it.get("qkey") or "",
+                                        "recipient_email": ", ".join(auto_pkt["to_emails"]),
+                                    }
+                                    for it in unalerted_items
+                                ]
+                            )
         except Exception:
             pass
         time.sleep(30)
@@ -652,7 +766,7 @@ def api_eml():
         return jsonify({"ok": False, "error": "Packet not found for current filters."}), 404
 
     subj = _packet_subject(packet, settings)
-    cc_emails = _parse_email_list(settings.get("cc_emails", ""))
+    cc_emails = _packet_cc_emails(packet, settings)
     html_body, plain_text = render_packet_email(packet, settings, evaluation["as_of_display"])
 
     msg = EmailMessage()

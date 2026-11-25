@@ -45,6 +45,9 @@ DEFAULT_SETTINGS = {
     "bom_email_subject": "Missing BOM Email",
     "bom_grace_hours": 2,
     "bom_since_date": "2026-11-25T09:41:00",
+    "bom_auto_enabled": False,
+    "bom_cc_emails": "bmasta@qiworks.com",
+    "bom_work_hours_only": True,
     "default_recipient_email": "akanday@qiworks.com",
     "grouping_mode": "digest",          # "digest" (per person) or "per_item" (per QKEY)
     "delivery_mode": "outlook_send",    # "outlook_send", "outlook_draft", "smtp", "dry_run"
@@ -121,6 +124,13 @@ def init_db() -> None:
                 received_at TEXT NOT NULL DEFAULT '',
                 source TEXT NOT NULL DEFAULT 'outlook',
                 recorded_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS bom_alerted (
+                job_lot_key TEXT PRIMARY KEY,
+                qkey TEXT NOT NULL DEFAULT '',
+                recipient_email TEXT NOT NULL DEFAULT '',
+                alerted_at TEXT NOT NULL
             );
             """
         )
@@ -513,4 +523,38 @@ def get_bom_seen_map() -> dict[str, dict]:
             "SELECT job_lot_key, job_number, lot_number, subject, sender, received_at, source, recorded_at FROM bom_seen"
         ).fetchall()
         return {dict(r)["job_lot_key"]: dict(r) for r in rows}
+
+
+def get_bom_alerted_keys() -> set[str]:
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute("SELECT job_lot_key FROM bom_alerted").fetchall()
+        return {r["job_lot_key"] for r in rows}
+
+
+def mark_bom_alerted(entries: list[dict]) -> None:
+    if not entries:
+        return
+    init_db()
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_conn() as conn:
+        for e in entries:
+            key = (e.get("job_lot_key") or "").strip()
+            if not key and e.get("job_number") and e.get("lot_number"):
+                key = normalize_job_lot_key(e["job_number"], e["lot_number"])
+            if not key:
+                continue
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO bom_alerted (job_lot_key, qkey, recipient_email, alerted_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    key,
+                    str(e.get("qkey") or ""),
+                    str(e.get("recipient_email") or ""),
+                    now,
+                ),
+            )
+        conn.commit()
 

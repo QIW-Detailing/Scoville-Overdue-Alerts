@@ -1,8 +1,8 @@
-param([switch]$NoBrowser, [string]$OpenUrl = "http://127.0.0.1:5055/?v=16")
+param([switch]$NoBrowser, [string]$OpenUrl = "http://127.0.0.1:5055/?v=18")
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $AppDir
 
-$ExpectedVersion = 16
+$ExpectedVersion = 18
 
 function Get-RunningVersion {
     try {

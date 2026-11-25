@@ -1,4 +1,4 @@
-const FRONTEND_APP_VERSION = 16;
+const FRONTEND_APP_VERSION = 18;
 const IS_GITHUB_PAGES =
   window.location.protocol === "https:" || window.location.hostname.endsWith("github.io");
 const IS_REMOTE_CLIENT =
@@ -25,6 +25,9 @@ const state = {
     bom_email_subject: "Missing BOM Email",
     bom_grace_hours: 2,
     bom_since_date: "2026-11-25T09:41:00",
+    bom_auto_enabled: false,
+    bom_cc_emails: "bmasta@qiworks.com",
+    bom_work_hours_only: true,
     default_recipient_email: "akanday@qiworks.com",
     grouping_mode: "digest",
     delivery_mode: "outlook_eml",
@@ -739,10 +742,16 @@ async function downloadEml(packetId) {
     const pkt = (state.evaluation?.packets || []).find((p) => p.packet_id === packetId);
     if (!pkt) return toast("Packet not found.", "err");
     const subj = packetSubject(pkt);
+    const ccCombined =
+      pkt.packet_kind === "missing_bom"
+        ? [state.settings.cc_emails, state.settings.bom_cc_emails || "bmasta@qiworks.com"]
+            .filter(Boolean)
+            .join(", ")
+        : state.settings.cc_emails || "";
     window.ScovilleStandalone.downloadPacketEml(
       pkt,
       subj,
-      state.settings.cc_emails || "",
+      ccCombined,
       state.evaluation.as_of_display
     );
     toast("Opened .eml download — click it to open in your PC's Outlook!", "ok");
@@ -1166,6 +1175,15 @@ function populateSettingsForm() {
     ? `Last automatic daily run: ${s.last_auto_run_date}`
     : "Last automatic daily run: Never";
 
+  const bomAutoEl = document.getElementById("setBomAutoEnabled");
+  if (bomAutoEl) bomAutoEl.checked = Boolean(s.bom_auto_enabled);
+  const bomCcEl = document.getElementById("setBomCcEmails");
+  if (bomCcEl) bomCcEl.value = s.bom_cc_emails ?? "bmasta@qiworks.com";
+  const bomGraceEl = document.getElementById("setBomGraceHours");
+  if (bomGraceEl) bomGraceEl.value = s.bom_grace_hours ?? 2;
+  const bomWorkEl = document.getElementById("setBomWorkHoursOnly");
+  if (bomWorkEl) bomWorkEl.checked = Boolean(s.bom_work_hours_only ?? true);
+
   document.getElementById("setScovilleUrl").value = s.scoville_url || "http://scoville:7555";
   document.getElementById("setScovilleEmail").value = s.scoville_email || "";
   document.getElementById("setScovillePassword").value = s.scoville_password || "";
@@ -1190,9 +1208,13 @@ async function openPreviewModal(packetId) {
     );
     state.previewPacketId = packetId;
     document.getElementById("modalTitle").textContent = `Preview: ${subj}`;
+    const ccMeta =
+      pkt.packet_kind === "missing_bom"
+        ? ` &nbsp;|&nbsp; Cc: <strong>${esc(state.settings.bom_cc_emails || "bmasta@qiworks.com")}</strong>`
+        : "";
     document.getElementById("modalMeta").innerHTML =
       `From: <strong>This PC's Local Outlook</strong> &nbsp;|&nbsp; ` +
-      `To: <strong>${esc(pkt.to_emails.join(", "))}</strong> &nbsp;|&nbsp; ` +
+      `To: <strong>${esc(pkt.to_emails.join(", "))}</strong>${ccMeta} &nbsp;|&nbsp; ` +
       `Assigned: <strong>${esc(pkt.recipient_name)}</strong>`;
     document.getElementById("modalBtnDraft").style.display = "none";
     const sendBtn = document.getElementById("modalBtnSend");
@@ -1214,9 +1236,12 @@ async function openPreviewModal(packetId) {
 
     state.previewPacketId = packetId;
     document.getElementById("modalTitle").textContent = `Preview: ${data.subject}`;
+    const srvCc = (data.cc_emails || []).length
+      ? ` &nbsp;|&nbsp; Cc: <strong>${esc(data.cc_emails.join(", "))}</strong>`
+      : "";
     document.getElementById("modalMeta").innerHTML =
       `From: <strong>${esc(data.from_email)}</strong> &nbsp;|&nbsp; ` +
-      `To: <strong>${esc(data.to_emails.join(", "))}</strong> &nbsp;|&nbsp; ` +
+      `To: <strong>${esc(data.to_emails.join(", "))}</strong>${srvCc} &nbsp;|&nbsp; ` +
       `Assigned: <strong>${esc(data.recipient_name)}</strong>`;
 
     document.getElementById("modalBtnSend").innerHTML = "&#x2709; Send This Email";
@@ -1374,6 +1399,10 @@ async function saveSettings() {
     schedule_enabled: document.getElementById("setScheduleEnabled").checked,
     schedule_time: document.getElementById("setScheduleTime").value || "08:00",
     schedule_weekdays_only: document.getElementById("setWeekdaysOnly").checked,
+    bom_auto_enabled: document.getElementById("setBomAutoEnabled")?.checked ?? false,
+    bom_cc_emails: (document.getElementById("setBomCcEmails")?.value || "bmasta@qiworks.com").trim(),
+    bom_grace_hours: Number(document.getElementById("setBomGraceHours")?.value || 2),
+    bom_work_hours_only: document.getElementById("setBomWorkHoursOnly")?.checked ?? true,
     scoville_url: document.getElementById("setScovilleUrl").value.trim(),
     scoville_email: document.getElementById("setScovilleEmail").value.trim(),
     scoville_password: document.getElementById("setScovillePassword").value,
