@@ -202,7 +202,7 @@ for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Milliseconds 500
     try {
         $ping = Invoke-RestMethod -Uri "http://127.0.0.1:5055/api/ping" -TimeoutSec 2 -ErrorAction Stop
-        if ($ping -and $ping.ok -and ([int]$ping.app_version -ge 15)) {
+        if ($ping -and $ping.ok -and ([int]$ping.app_version -ge 16)) {
             $serverReady = $true
             break
         }
@@ -211,7 +211,7 @@ for ($i = 0; $i -lt 30; $i++) {
 
 if (-not $serverReady) {
     Write-Host ""
-    Write-Host "[ERROR] New helper (v15) did not start cleanly on port 5055." -ForegroundColor Red
+    Write-Host "[ERROR] New helper (v16) did not start cleanly on port 5055." -ForegroundColor Red
     if (Test-Path $errLog) {
         Write-Host "--- Error Log ---" -ForegroundColor Yellow
         Get-Content $errLog -Tail 25
@@ -226,11 +226,11 @@ if (-not $serverReady) {
 
 Write-Host ""
 Write-Host "========================================================" -ForegroundColor Green
-Write-Host "  SUCCESS! Helper v2.5 is LIVE at http://127.0.0.1:5055" -ForegroundColor Green
+Write-Host "  SUCCESS! Helper v2.6 is LIVE at http://127.0.0.1:5055" -ForegroundColor Green
 Write-Host "========================================================" -ForegroundColor Green
 Write-Host "Opening updated dashboard in your browser now..." -ForegroundColor Cyan
 
 if (-not $NoBrowser) {
-    Start-Process "http://127.0.0.1:5055/?v=15"
+    Start-Process "http://127.0.0.1:5055/?v=16"
     Start-Sleep -Seconds 3
 }

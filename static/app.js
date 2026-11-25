@@ -1,4 +1,4 @@
-const FRONTEND_APP_VERSION = 15;
+const FRONTEND_APP_VERSION = 16;
 const IS_GITHUB_PAGES =
   window.location.protocol === "https:" || window.location.hostname.endsWith("github.io");
 const IS_REMOTE_CLIENT =
@@ -22,6 +22,8 @@ const state = {
     scoville_url: "http://scoville:7555",
     email_subject: "Overdues on Scoville",
     zero_value_subject: "$0 Items on Scoville",
+    bom_email_subject: "Missing BOM Email",
+    bom_grace_hours: 2,
     default_recipient_email: "akanday@qiworks.com",
     grouping_mode: "digest",
     delivery_mode: "outlook_eml",
@@ -327,6 +329,7 @@ function renderHeaderAndKPIs() {
 
   const sum = ev.summary;
   const isZero = state.selectedMilestone === "zero_value";
+  const isBom = state.selectedMilestone === "missing_bom";
   const dDays = state.dueSoonDays || sum.due_soon_days || 7;
   const dayWord = dDays === 1 ? "Day" : "Days";
   const dueSoonTitle = `Due Next ${dDays} ${dayWord}`;
@@ -343,6 +346,18 @@ function renderHeaderAndKPIs() {
     document.getElementById("kpiOverdueItems").textContent = sum.overdue_items_count;
     document.getElementById("kpiOverdueMilestones").textContent =
       `$0 items w/ real scope values available (separate from All)`;
+    document.getElementById("kpiPacketsCount").textContent = sum.recipients_to_email;
+    document.getElementById("kpiDueSoon").textContent = "—";
+    const dueFootEl = document.getElementById("kpiDueSoonFoot");
+    if (dueFootEl) dueFootEl.textContent = "Click to switch to schedule items";
+  } else if (isBom) {
+    const graceH = sum.bom_grace_hours || 2;
+    document.getElementById("kpiTotalItems").textContent = sum.missing_bom_scanned || 0;
+    document.getElementById("kpiOnHoldNote").textContent =
+      `Tekla-linked since 11/24 (${sum.missing_bom_verified_count || 0} BOM sent, ${sum.missing_bom_within_grace_count || 0} <${graceH}h grace)`;
+    document.getElementById("kpiOverdueItems").textContent = sum.overdue_items_count;
+    document.getElementById("kpiOverdueMilestones").textContent =
+      `Linked >${graceH}h ago w/o BOM email in Detailing Mailbox (separate from All)`;
     document.getElementById("kpiPacketsCount").textContent = sum.recipients_to_email;
     document.getElementById("kpiDueSoon").textContent = "—";
     const dueFootEl = document.getElementById("kpiDueSoonFoot");
@@ -407,6 +422,8 @@ function renderMilestoneStrip() {
   const bd = sum.milestone_breakdown || {};
   const allTotal = sum.all_overdue_milestones_total ?? sum.overdue_milestones_total ?? 0;
   const zeroCnt = sum.zero_value_count ?? 0;
+  const bomCnt = sum.missing_bom_count ?? 0;
+  const bomGrace = sum.bom_grace_hours || 2;
 
   const allChipHtml = `
     <div class="ms-chip ${state.selectedMilestone === "" ? "active" : ""}" data-ms="" title="Show all overdue schedule dates (excludes $0 Items)">
@@ -431,10 +448,14 @@ function renderMilestoneStrip() {
     .join("");
 
   const zeroChipHtml = `
-    <div class="ms-divider" title="$0 Items are tracked separately and excluded from All"></div>
+    <div class="ms-divider" title="$0 Items & Missing BOM are tracked separately and excluded from All"></div>
     <div class="ms-chip zero-chip ${state.selectedMilestone === "zero_value" ? "active" : ""}" data-ms="zero_value" title="Separate view: $0 items (released & unreleased) that have real job scope values available to assign (DPM only)">
-      <span>$0 Items <small style="color:#6366f1;">(DPM · Separate)</small></span>
+      <span>$0 Items <small style="color:#6366f1;">(DPM &middot; Separate)</small></span>
       <span class="count ${zeroCnt > 0 ? "zero-hot" : ""}">${zeroCnt}</span>
+    </div>
+    <div class="ms-chip bom-chip ${state.selectedMilestone === "missing_bom" ? "active" : ""}" data-ms="missing_bom" title="Separate view: Tekla-linked items (> ${bomGrace}h) with no matching BOM email in Detailing Mailbox (DPM only)">
+      <span>Missing BOM <small style="color:#9a3412;">(DPM &middot; &gt;${bomGrace}h)</small></span>
+      <span class="count ${bomCnt > 0 ? "bom-hot" : ""}">${bomCnt}</span>
     </div>
   `;
 
@@ -467,6 +488,8 @@ function itemMatchesFilters(it, f, viewMode = "overdue") {
   if (f.ps && it.ps !== f.ps) return false;
   if (f.milestone === "zero_value") {
     if (!it.is_zero_value_item) return false;
+  } else if (f.milestone === "missing_bom") {
+    if (!it.is_missing_bom_item) return false;
   } else if (f.milestone) {
     const ms = it.milestones?.[f.milestone];
     if (viewMode === "due-soon-table") {
@@ -517,14 +540,23 @@ function renderPackets() {
   if (packets.length === 0) {
     const isToday = state.evaluation.as_of_date === state.today;
     const msObj = state.milestones.find((m) => m.key === state.selectedMilestone);
-    const msLabel = state.selectedMilestone === "zero_value" ? "$0 Value" : (msObj ? msObj.label : "Schedule");
+    const msLabel =
+      state.selectedMilestone === "zero_value"
+        ? "$0 Value"
+        : state.selectedMilestone === "missing_bom"
+        ? "Missing BOM"
+        : msObj
+        ? msObj.label
+        : "Schedule";
     container.innerHTML = `
       <div class="empty-state">
         <h3>No ${esc(msLabel)} Items Found</h3>
         <p>
           ${
             hasClientFilter
-              ? `No overdue items match your active search / filter${f.search ? ` ("${esc(f.search)}")` : ""}.`
+              ? `No items match your active search / filter${f.search ? ` ("${esc(f.search)}")` : ""}.`
+              : state.selectedMilestone === "missing_bom"
+              ? "All Tekla-linked items (>2h since 11/24/2026) have matching BOM emails recorded!"
               : isToday && !state.selectedMilestone
               ? "Great news — 0 items have missed dates strictly before today in Scoville."
               : "No items match your current selection / filter."
@@ -532,12 +564,14 @@ function renderPackets() {
         </p>
         <div class="inline-row" style="justify-content:center;">
           ${hasClientFilter ? `<button type="button" class="btn btn-primary" id="emptyBtnClearFilters">Clear Search &amp; Filters</button>` : ""}
+          ${state.selectedMilestone === "missing_bom" && !state.staticMode ? `<button type="button" class="btn btn-outline" id="emptyBtnRescanBom">&#x21bb; Re-check Detailing Mailbox</button>` : ""}
           ${state.selectedMilestone ? `<button type="button" class="btn btn-outline" id="emptyBtnShowAll">Back to All Overdues</button>` : ""}
-          <button type="button" class="btn btn-outline" id="emptyBtnDueToday">Include Items Due Today</button>
-          <button type="button" class="btn btn-outline" id="emptyBtnPlus7">Simulate +7 Days Out</button>
+          ${!state.selectedMilestone ? `<button type="button" class="btn btn-outline" id="emptyBtnDueToday">Include Items Due Today</button>` : ""}
+          ${!state.selectedMilestone ? `<button type="button" class="btn btn-outline" id="emptyBtnPlus7">Simulate +7 Days Out</button>` : ""}
         </div>
       </div>
     `;
+    document.getElementById("emptyBtnRescanBom")?.addEventListener("click", rescanBomMailbox);
     document.getElementById("emptyBtnClearFilters")?.addEventListener("click", () => {
       document.getElementById("filterSearch").value = "";
       document.getElementById("filterDpm").value = "";
@@ -564,7 +598,8 @@ function renderPackets() {
     .map((pkt) => {
       const isPs = pkt.role.startsWith("PS");
       const isZeroPkt = pkt.packet_kind === "zero_value";
-      const countCls = isZeroPkt ? "badge-zero" : "badge-overdue";
+      const isBomPkt = pkt.packet_kind === "missing_bom";
+      const countCls = isZeroPkt ? "badge-zero" : isBomPkt ? "badge-bom" : "badge-overdue";
 
       const itemsHtml = pkt.items
         .map((it) => {
@@ -573,6 +608,12 @@ function renderPackets() {
             .map((m) => {
               if (m.is_zero_value) {
                 return `<span class="badge badge-zero" title="${esc((m.sample_scopes || []).join(' | '))}">${esc(m.release_status)} &middot; ${esc(m.display)}</span>`;
+              }
+              if (m.is_missing_bom) {
+                const markBtn = !state.staticMode
+                  ? ` <button type="button" class="btn btn-xs btn-ghost" data-mark-bom-job="${esc(it.job_number)}" data-mark-bom-lot="${esc(it.lot_number)}" title="Mark Lot #${esc(it.lot_number)} as BOM Sent">&#x2713; Sent</button>`
+                  : "";
+                return `<span class="badge badge-bom" title="Linked: ${esc(m.linked_display || '')}">${esc(m.display)}</span>${markBtn}`;
               }
               const cls = m.is_field_dims ? "badge-fm-overdue" : "badge-overdue";
               const dTag = m.days_overdue === 0 ? "Today" : `${m.days_overdue}d`;
@@ -632,16 +673,71 @@ function renderPackets() {
   container.querySelectorAll("[data-send]").forEach((b) =>
     b.addEventListener("click", () => sendPackets([b.getAttribute("data-send")], null))
   );
+  container.querySelectorAll("[data-mark-bom-job]").forEach((b) =>
+    b.addEventListener("click", () =>
+      markBomSent(b.getAttribute("data-mark-bom-job"), b.getAttribute("data-mark-bom-lot"))
+    )
+  );
+}
+
+async function rescanBomMailbox() {
+  try {
+    toast("Scanning Detailing Mailbox in Outlook...", "info");
+    const res = await apiFetch("/api/bom/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(currentEvalParams()),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "BOM mailbox scan failed");
+    state.evaluation = data.evaluation;
+    renderAll();
+    const s = data.scan || {};
+    toast(
+      `Checked ${s.scanned_messages || 0} BOM emails (${s.newly_recorded || 0} newly recorded).`,
+      "ok"
+    );
+  } catch (err) {
+    toast(friendlyFetchError(err), "err");
+  }
+}
+
+async function markBomSent(jobNumber, lotNumber) {
+  try {
+    const res = await apiFetch("/api/bom/mark-sent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        job_number: jobNumber,
+        lot_number: lotNumber,
+        ...currentEvalParams(),
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "Failed marking BOM sent");
+    state.evaluation = data.evaluation;
+    renderAll();
+    toast(`Marked Job ${jobNumber} Lot #${lotNumber} as BOM Sent!`, "ok");
+  } catch (err) {
+    toast(friendlyFetchError(err), "err");
+  }
+}
+
+function packetSubject(pkt) {
+  if (pkt.packet_kind === "zero_value") {
+    return state.settings.zero_value_subject || "$0 Items on Scoville";
+  }
+  if (pkt.packet_kind === "missing_bom") {
+    return state.settings.bom_email_subject || "Missing BOM Email";
+  }
+  return state.settings.email_subject || "Overdues on Scoville";
 }
 
 async function downloadEml(packetId) {
   if (state.staticMode && window.ScovilleStandalone) {
     const pkt = (state.evaluation?.packets || []).find((p) => p.packet_id === packetId);
     if (!pkt) return toast("Packet not found.", "err");
-    const subj =
-      pkt.packet_kind === "zero_value"
-        ? state.settings.zero_value_subject || "$0 Items on Scoville"
-        : state.settings.email_subject || "Overdues on Scoville";
+    const subj = packetSubject(pkt);
     window.ScovilleStandalone.downloadPacketEml(
       pkt,
       subj,
@@ -712,7 +808,10 @@ function setActiveSubview(subviewName) {
     card.classList.toggle("active-kpi", card.getAttribute("data-kpi-subview") === subviewName);
   });
 
-  if (subviewName === "due-soon-table" && state.selectedMilestone === "zero_value") {
+  if (
+    subviewName === "due-soon-table" &&
+    (state.selectedMilestone === "zero_value" || state.selectedMilestone === "missing_bom")
+  ) {
     state.selectedMilestone = "";
     loadState(true);
   }
@@ -736,6 +835,65 @@ function renderItemsTable() {
 
   if (dueToolbar) {
     dueToolbar.classList.toggle("hidden", state.activeSubview !== "due-soon-table");
+  }
+
+  if (f.milestone === "missing_bom") {
+    theadRow.innerHTML =
+      `<th>QKEY / Lot #</th>` +
+      `<th>Job # &amp; Site</th>` +
+      `<th>Category / Sub Category</th>` +
+      `<th>DPM / PS</th>` +
+      `<th>Tekla Link Time &amp; Status</th>` +
+      `<th>Actions</th>`;
+
+    const filteredBom = (state.evaluation.items || []).filter((it) =>
+      itemMatchesFilters(it, f, state.activeSubview)
+    );
+    if (filteredBom.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:28px;color:#64748b;">No Tekla-linked items (&gt;2h) are missing a BOM email.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = filteredBom
+      .map((it) => {
+        const eUrl = it.edit_url;
+        return `
+          <tr>
+            <td>
+              <a class="pkt-qkey" href="${esc(eUrl)}" target="_blank" rel="noopener">${esc(it.qkey)}</a>
+              <div style="margin-top:3px;"><span class="badge badge-bom">Lot #${esc(it.lot_number)}</span></div>
+            </td>
+            <td>
+              <strong>${esc(it.job_number)}</strong><br>
+              <span style="color:#475569;font-size:12px;">${esc(it.job_site)}</span>
+            </td>
+            <td>
+              <div>${esc(it.category)}</div>
+              <div style="color:#64748b;font-size:12px;">${esc(it.sub_category)} ${it.sequence ? `(Seq ${esc(it.sequence)})` : ""}</div>
+            </td>
+            <td style="white-space:nowrap;font-size:12px;">
+              <div><strong>DPM:</strong> ${esc(it.dpm)}</div>
+              <div><strong>PS:</strong> ${esc(it.ps)}</div>
+            </td>
+            <td>
+              <div><strong>Linked:</strong> ${esc(it.linked_display || "—")}</div>
+              <div style="margin-top:3px;"><span class="badge badge-bom">No BOM Email (${esc(it.elapsed_display || "")})</span></div>
+            </td>
+            <td style="white-space:nowrap;">
+              ${!state.staticMode ? `<button type="button" class="btn btn-xs btn-outline" data-tbl-mark-job="${esc(it.job_number)}" data-tbl-mark-lot="${esc(it.lot_number)}">&#x2713; Mark Sent</button> ` : ""}
+              <a class="btn btn-xs btn-primary" href="${esc(eUrl)}" target="_blank" rel="noopener">Scoville &nearr;</a>
+            </td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    tbody.querySelectorAll("[data-tbl-mark-job]").forEach((b) =>
+      b.addEventListener("click", () =>
+        markBomSent(b.getAttribute("data-tbl-mark-job"), b.getAttribute("data-tbl-mark-lot"))
+      )
+    );
+    return;
   }
 
   if (f.milestone === "zero_value") {
@@ -1024,10 +1182,7 @@ async function openPreviewModal(packetId) {
   if (state.staticMode && window.ScovilleStandalone) {
     const pkt = (state.evaluation?.packets || []).find((p) => p.packet_id === packetId);
     if (!pkt) return toast("Packet not found.", "err");
-    const subj =
-      pkt.packet_kind === "zero_value"
-        ? state.settings.zero_value_subject || "$0 Items on Scoville"
-        : state.settings.email_subject || "Overdues on Scoville";
+    const subj = packetSubject(pkt);
     const htmlBody = window.ScovilleStandalone.renderPacketEmailHtml(
       pkt,
       state.evaluation.as_of_display

@@ -12,6 +12,7 @@ from datetime import date, datetime
 from email.message import EmailMessage
 from flask import Flask, Response, jsonify, render_template, request
 
+import bom_scanner
 import db
 from mailer import (
     _parse_email_list,
@@ -36,6 +37,15 @@ app = Flask(
 _sync_lock = threading.Lock()
 
 
+def _packet_subject(packet: dict, settings: dict) -> str:
+    kind = packet.get("packet_kind")
+    if kind == "zero_value":
+        return settings.get("zero_value_subject") or "$0 Items on Scoville"
+    if kind == "missing_bom":
+        return settings.get("bom_email_subject") or "Missing BOM Email"
+    return settings.get("email_subject") or "Overdues on Scoville"
+
+
 def write_public_snapshot(synced_at: str | None, cache_payload: dict, directory: list[dict]) -> None:
     """Writes a password-free snapshot.json when running from the repo folder (full admin syncs only)."""
     if IS_FROZEN or not synced_at or cache_payload.get("is_scoped_user"):
@@ -48,6 +58,8 @@ def write_public_snapshot(synced_at: str | None, cache_payload: dict, directory:
             "items": cache_payload.get("items") or [],
             "zero_value_items": cache_payload.get("zero_value_items") or [],
             "zero_value_scanned": int(cache_payload.get("zero_value_scanned") or 0),
+            "tekla_recent_items": cache_payload.get("tekla_recent_items") or [],
+            "bom_seen_keys": sorted(db.get_bom_seen_map().keys()),
             "directory": directory,
         }
         with open(snap_path, "w", encoding="utf-8") as f:
@@ -86,7 +98,7 @@ def _handle_cors_preflight():
     return None
 
 
-APP_VERSION = 15
+APP_VERSION = 16
 
 
 @app.after_request
@@ -108,21 +120,29 @@ def api_ping():
 
 
 def perform_scoville_sync() -> tuple[str, dict, list[dict]]:
-    """Synchronizes items & $0 items from Scoville and updates discovered DPM/PS names."""
+    """Synchronizes items, $0 items, Tekla WIP & Detailing Mailbox BOMs, and updates DPM/PS directory."""
     with _sync_lock:
         settings = db.get_settings()
+        bom_since = settings.get("bom_since_date") or "2026-11-24"
+        try:
+            bom_scanner.scan_outlook_bom_emails(since_iso=bom_since)
+        except Exception:
+            pass
         cache_payload = fetch_scoville_data(
             base_url=settings["scoville_url"],
             email=settings["scoville_email"],
             password=settings["scoville_password"],
+            bom_since_date=bom_since,
         )
         items = cache_payload.get("items", [])
         z_items = cache_payload.get("zero_value_items", [])
+        t_items = cache_payload.get("tekla_recent_items", [])
+        all_discovered = items + z_items + t_items
         dpm_names = {
-            it["dpm"] for it in (items + z_items) if it.get("dpm") and it["dpm"] != "Unassigned"
+            it["dpm"] for it in all_discovered if it.get("dpm") and it["dpm"] != "Unassigned"
         }
         ps_names = {
-            it["ps"] for it in (items + z_items) if it.get("ps") and it["ps"] != "Unassigned"
+            it["ps"] for it in all_discovered if it.get("ps") and it["ps"] != "Unassigned"
         }
         directory = db.sync_directory_names(
             dpm_names=dpm_names,
@@ -153,6 +173,8 @@ def _build_current_evaluation(
     raw_items = cache_payload.get("items") or []
     zero_items = cache_payload.get("zero_value_items")
     zero_scanned = int(cache_payload.get("zero_value_scanned") or 0)
+    tekla_recent = cache_payload.get("tekla_recent_items") or []
+    bom_seen_keys = set(db.get_bom_seen_map().keys())
     sync_error = None
 
     # On a fresh colleague PC install (before their first sync), warm-seed cache from bundled snapshot.json
@@ -166,6 +188,8 @@ def _build_current_evaluation(
                     raw_items = snap_data.get("items") or []
                     zero_items = snap_data.get("zero_value_items") or []
                     zero_scanned = int(snap_data.get("zero_value_scanned") or 0)
+                    tekla_recent = snap_data.get("tekla_recent_items") or []
+                    bom_seen_keys.update(snap_data.get("bom_seen_keys") or [])
                     synced_at = snap_data.get("synced_at")
             except Exception:
                 pass
@@ -181,6 +205,8 @@ def _build_current_evaluation(
             raw_items = cache_payload.get("items") or []
             zero_items = cache_payload.get("zero_value_items") or []
             zero_scanned = int(cache_payload.get("zero_value_scanned") or 0)
+            tekla_recent = cache_payload.get("tekla_recent_items") or []
+            bom_seen_keys = set(db.get_bom_seen_map().keys())
         except Exception as exc:
             sync_error = str(exc)
             directory = db.get_directory()
@@ -198,6 +224,8 @@ def _build_current_evaluation(
         zero_value_items=zero_items or [],
         zero_value_scanned=zero_scanned,
         due_soon_days=due_soon_days,
+        tekla_recent_items=tekla_recent,
+        bom_seen_keys=bom_seen_keys,
     )
     return synced_at, evaluation, directory, settings, sync_error
 
@@ -274,6 +302,8 @@ def api_sync():
             zero_value_items=cache_payload.get("zero_value_items") or [],
             zero_value_scanned=int(cache_payload.get("zero_value_scanned") or 0),
             due_soon_days=due_soon_days,
+            tekla_recent_items=cache_payload.get("tekla_recent_items") or [],
+            bom_seen_keys=db.get_bom_seen_map(),
         )
         return jsonify(
             {
@@ -307,11 +337,7 @@ def api_preview():
     if not packet:
         return jsonify({"ok": False, "error": "Packet not found for current filters."}), 404
 
-    subj = (
-        settings.get("zero_value_subject", "$0 Items on Scoville")
-        if packet.get("packet_kind") == "zero_value"
-        else settings.get("email_subject", "Overdues on Scoville")
-    )
+    subj = _packet_subject(packet, settings)
     html_body, plain_text = render_packet_email(packet, settings, evaluation["as_of_display"])
     return jsonify(
         {
@@ -366,11 +392,7 @@ def api_send():
     error_count = 0
 
     for pkt in selected:
-        subj = (
-            settings.get("zero_value_subject", "$0 Items on Scoville")
-            if pkt.get("packet_kind") == "zero_value"
-            else settings.get("email_subject", "Overdues on Scoville")
-        )
+        subj = _packet_subject(pkt, settings)
         html_body, plain_text = render_packet_email(pkt, settings, evaluation["as_of_display"])
         status, err_msg, actual_from = deliver_email(
             settings=settings,
@@ -629,11 +651,7 @@ def api_eml():
     if not packet:
         return jsonify({"ok": False, "error": "Packet not found for current filters."}), 404
 
-    subj = (
-        settings.get("zero_value_subject", "$0 Items on Scoville")
-        if packet.get("packet_kind") == "zero_value"
-        else settings.get("email_subject", "Overdues on Scoville")
-    )
+    subj = _packet_subject(packet, settings)
     cc_emails = _parse_email_list(settings.get("cc_emails", ""))
     html_body, plain_text = render_packet_email(packet, settings, evaluation["as_of_display"])
 
@@ -666,6 +684,47 @@ def api_eml():
         mimetype="message/rfc822",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.route("/api/bom/scan", methods=["POST"])
+def api_bom_scan():
+    """Re-scans Detailing Mailbox & local Outlook for BOM emails without requiring a full Scoville scrape."""
+    payload = request.get_json(silent=True) or {}
+    settings = db.get_settings()
+    scan_res = bom_scanner.scan_outlook_bom_emails(since_iso=settings.get("bom_since_date") or "2026-11-24")
+    synced_at, cache_payload = db.get_sync_cache()
+    directory = db.get_directory()
+    write_public_snapshot(synced_at, cache_payload, directory)
+    _, evaluation, _, _, _ = _build_current_evaluation(
+        as_of=payload.get("as_of") or None,
+        include_due_today=payload.get("include_due_today"),
+        exclude_on_hold=payload.get("exclude_on_hold"),
+        milestone_filter=payload.get("milestone") or None,
+        due_soon_days=int(payload.get("due_soon_days") or 7),
+    )
+    return jsonify({"ok": True, "scan": scan_res, "evaluation": evaluation})
+
+
+@app.route("/api/bom/mark-sent", methods=["POST"])
+def api_bom_mark_sent():
+    """Manually marks a (Job #, Lot #) as BOM Sent permanently in SQLite."""
+    payload = request.get_json(silent=True) or {}
+    job_number = (payload.get("job_number") or "").strip()
+    lot_number = (payload.get("lot_number") or "").strip()
+    if not job_number or not lot_number:
+        return jsonify({"ok": False, "error": "job_number and lot_number are required."}), 400
+    key = db.mark_bom_sent_manual(job_number, lot_number, note="Marked BOM Sent in dashboard")
+    synced_at, cache_payload = db.get_sync_cache()
+    directory = db.get_directory()
+    write_public_snapshot(synced_at, cache_payload, directory)
+    _, evaluation, _, _, _ = _build_current_evaluation(
+        as_of=payload.get("as_of") or None,
+        include_due_today=payload.get("include_due_today"),
+        exclude_on_hold=payload.get("exclude_on_hold"),
+        milestone_filter=payload.get("milestone") or None,
+        due_soon_days=int(payload.get("due_soon_days") or 7),
+    )
+    return jsonify({"ok": True, "job_lot_key": key, "evaluation": evaluation})
 
 
 def start_background_scheduler() -> None:

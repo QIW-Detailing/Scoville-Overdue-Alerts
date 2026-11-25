@@ -42,6 +42,9 @@ DEFAULT_SETTINGS = {
     "from_name": "Scoville Detailing Alerts",
     "email_subject": "Overdues on Scoville",
     "zero_value_subject": "$0 Items on Scoville",
+    "bom_email_subject": "Missing BOM Email",
+    "bom_grace_hours": 2,
+    "bom_since_date": "2026-11-24",
     "default_recipient_email": "akanday@qiworks.com",
     "grouping_mode": "digest",          # "digest" (per person) or "per_item" (per QKEY)
     "delivery_mode": "outlook_send",    # "outlook_send", "outlook_draft", "smtp", "dry_run"
@@ -107,6 +110,17 @@ def init_db() -> None:
                 qkeys_json TEXT NOT NULL DEFAULT '[]',
                 error_message TEXT NOT NULL DEFAULT '',
                 html_body TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS bom_seen (
+                job_lot_key TEXT PRIMARY KEY,
+                job_number TEXT NOT NULL,
+                lot_number TEXT NOT NULL,
+                subject TEXT NOT NULL DEFAULT '',
+                sender TEXT NOT NULL DEFAULT '',
+                received_at TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'outlook',
+                recorded_at TEXT NOT NULL
             );
             """
         )
@@ -422,3 +436,81 @@ def clear_email_logs(errors_only: bool = False) -> int:
             cur = conn.execute("DELETE FROM email_logs")
         conn.commit()
         return int(cur.rowcount or 0)
+
+
+def normalize_job_lot_key(job_number: str, lot_number: str) -> str:
+    import re
+    j = (job_number or "").strip()
+    raw_lot = (lot_number or "").strip().upper().lstrip("#")
+    m = re.fullmatch(r"([A-Z]{1,3})0*(\d{1,4})", raw_lot)
+    if m:
+        prefix, digits = m.group(1), m.group(2)
+        num_val = int(digits)
+        canon_lot = f"{prefix}{num_val:03d}" if num_val < 1000 else f"{prefix}{num_val}"
+    else:
+        canon_lot = raw_lot
+    return f"{j}:{canon_lot}"
+
+
+def upsert_bom_seen_entries(entries: list[dict]) -> int:
+    """Permanently records seen BOM emails by Job # + Lot/FAB # so deleted Inbox items stay marked sent."""
+    if not entries:
+        return 0
+    init_db()
+    now = datetime.now().isoformat(timespec="seconds")
+    added = 0
+    with get_conn() as conn:
+        for e in entries:
+            j_num = (e.get("job_number") or "").strip()
+            l_num = (e.get("lot_number") or "").strip().upper().lstrip("#")
+            if not j_num or not l_num:
+                continue
+            key = normalize_job_lot_key(j_num, l_num)
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO bom_seen (
+                    job_lot_key, job_number, lot_number, subject, sender, received_at, source, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    key,
+                    j_num,
+                    key.split(":", 1)[1],
+                    (e.get("subject") or "")[:300],
+                    (e.get("sender") or "")[:160],
+                    (e.get("received_at") or "")[:40],
+                    (e.get("source") or "outlook")[:40],
+                    now,
+                ),
+            )
+            if cur.rowcount and cur.rowcount > 0:
+                added += 1
+        conn.commit()
+    return added
+
+
+def mark_bom_sent_manual(job_number: str, lot_number: str, note: str = "Marked sent manually") -> str:
+    key = normalize_job_lot_key(job_number, lot_number)
+    upsert_bom_seen_entries(
+        [
+            {
+                "job_number": job_number,
+                "lot_number": lot_number,
+                "subject": note,
+                "sender": "Manual Override",
+                "received_at": datetime.now().isoformat(timespec="seconds"),
+                "source": "manual",
+            }
+        ]
+    )
+    return key
+
+
+def get_bom_seen_map() -> dict[str, dict]:
+    init_db()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT job_lot_key, job_number, lot_number, subject, sender, received_at, source, recorded_at FROM bom_seen"
+        ).fetchall()
+        return {dict(r)["job_lot_key"]: dict(r) for r in rows}
+

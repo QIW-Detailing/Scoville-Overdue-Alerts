@@ -25,10 +25,11 @@ ZERO_VALUE_PLACEHOLDER_IDS = {"17188", "17187", "17352"}
 
 
 class _ScovilleTableParser(HTMLParser):
-    """Parses Scoville server-rendered Semantic-UI schedule tables."""
+    """Parses Scoville server-rendered HTML tables (with or without explicit <thead>/<tbody>)."""
 
     def __init__(self) -> None:
         super().__init__()
+        self.in_table = False
         self.in_thead = False
         self.in_tbody = False
         self.in_th = False
@@ -47,14 +48,16 @@ class _ScovilleTableParser(HTMLParser):
         attr_map = {k.lower(): (v or "") for k, v in attrs}
         t = tag.lower()
 
-        if t == "thead":
+        if t == "table":
+            self.in_table = True
+        elif t == "thead":
             self.in_thead = True
         elif t == "tbody":
             self.in_tbody = True
-        elif t == "th" and self.in_thead:
+        elif t == "th" and (self.in_thead or (self.in_table and not self.rows)):
             self.in_th = True
             self._cur_th = []
-        elif t == "tr" and self.in_tbody:
+        elif t == "tr" and (self.in_tbody or (self.in_table and not self.in_thead)):
             self.in_tr = True
             self._cur_tr_attrs = attr_map
             self._cur_cells = []
@@ -87,7 +90,9 @@ class _ScovilleTableParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         t = tag.lower()
-        if t == "thead":
+        if t == "table":
+            self.in_table = False
+        elif t == "thead":
             self.in_thead = False
         elif t == "tbody":
             self.in_tbody = False
@@ -121,8 +126,6 @@ class _ScovilleTableParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self.in_th:
             self._cur_th.append(data)
-        elif self.in_th and t in ("div", "br", "p"):
-            self._cur_th.append(" ")
         elif self.in_td and self._cur_cell is not None:
             self._cur_cell["text_parts"].append(data)
 
@@ -287,6 +290,42 @@ def _is_zero_dollar_value(raw_val: str) -> bool:
     return bool(re.fullmatch(r"0+(\.0+)?", cleaned))
 
 
+def normalize_job_lot_key(job_number: str, lot_number: str) -> str:
+    j = (job_number or "").strip()
+    raw_lot = (lot_number or "").strip().upper().lstrip("#")
+    m = re.fullmatch(r"([A-Z]{1,3})0*(\d{1,4})", raw_lot)
+    if m:
+        prefix, digits = m.group(1), m.group(2)
+        num_val = int(digits)
+        canon_lot = f"{prefix}{num_val:03d}" if num_val < 1000 else f"{prefix}{num_val}"
+    else:
+        canon_lot = raw_lot
+    return f"{j}:{canon_lot}"
+
+
+def _parse_wip_datetime(raw_date: str, raw_time: str) -> tuple[str | None, str | None, str]:
+    """Returns (iso_date, iso_datetime, display_datetime) from /viewShopWIP Received Date + Time."""
+    iso_d = parse_scoville_date(raw_date)
+    if not iso_d:
+        return None, None, "—"
+    d_obj = datetime.strptime(iso_d, "%Y-%m-%d")
+    tm = re.search(r"(\d{1,2}):(\d{2})\s*([AaPp][Mm])?", (raw_time or "").strip())
+    if tm:
+        hr = int(tm.group(1))
+        mn = int(tm.group(2))
+        ampm = (tm.group(3) or "").lower()
+        if ampm == "pm" and hr < 12:
+            hr += 12
+        elif ampm == "am" and hr == 12:
+            hr = 0
+        dt_full = d_obj.replace(hour=min(23, hr), minute=min(59, mn), second=0)
+        h12 = dt_full.hour % 12 or 12
+        ap_str = "AM" if dt_full.hour < 12 else "PM"
+        disp = f"{dt_full.strftime('%m/%d/%Y')} {h12}:{dt_full.minute:02d} {ap_str}"
+        return iso_d, dt_full.strftime("%Y-%m-%dT%H:%M:%S"), disp
+    return iso_d, f"{iso_d}T08:00:00", d_obj.strftime("%m/%d/%Y")
+
+
 def parse_scoville_date(raw: str) -> str | None:
     txt = (raw or "").strip()
     if not txt:
@@ -393,7 +432,13 @@ def _clean_cat_sub(cell: dict | None) -> tuple[str, str]:
     return cat, sub
 
 
-def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int = 25) -> dict:
+def fetch_scoville_data(
+    base_url: str,
+    email: str,
+    password: str,
+    timeout: int = 25,
+    bom_since_date: str = "2026-11-24",
+) -> dict:
     """
     Logs into Scoville and scrapes:
       1) Unreleased detailing schedule + 6 date milestones (skipping Tekla-linked items for PS Request)
@@ -677,6 +722,8 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
                 "forecast_url": f"{base}/item/{qk}/forecastValues",
             }
 
+    admin_meta_by_qkey: dict[str, dict] = {}
+
     if not is_my_view:
         try:
             adm_resp = session.get(f"{base}/admin/all", allow_redirects=True, timeout=timeout)
@@ -689,6 +736,7 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
                 val_idx = h3.get("value", 14)
                 ps_idx = h3.get("ps", 12)
                 dpm_idx = h3.get("dpm", 13)
+                cat_idx = h3.get("category", 3)
 
                 for row in p3.rows:
                     cells = row["cells"]
@@ -703,6 +751,17 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
 
                     lot_num = cells[lot_idx]["text"].strip()
                     val_txt = cells[val_idx]["text"].strip()
+                    adm_dpm = (cells[dpm_idx]["text"].strip() if dpm_idx < len(cells) else "") or "Unassigned"
+                    adm_ps = (cells[ps_idx]["text"].strip() if ps_idx < len(cells) else "") or "Unassigned"
+                    adm_cat = cells[cat_idx]["text"].strip() if cat_idx < len(cells) else ""
+
+                    admin_meta_by_qkey[qkey] = {
+                        "dpm": adm_dpm,
+                        "ps": adm_ps,
+                        "category": adm_cat,
+                        "on_hold": on_hold,
+                        "lot_number": lot_num,
+                    }
 
                     if qkey in items_by_qkey and lot_num:
                         items_by_qkey[qkey]["lot_number"] = lot_num
@@ -720,47 +779,95 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
                             "lot_number": lot_num,
                             "job_number": cells[h3.get("job #", 1)]["text"].strip(),
                             "job_site": cells[h3.get("job site", 2)]["text"].strip(),
-                            "category": cells[h3.get("category", 3)]["text"].strip(),
+                            "category": adm_cat,
                             "sub_category": cells[h3.get("sub category", 4)]["text"].strip(),
                             "sequence": cells[h3.get("seq", 5)]["text"].strip(),
-                            "dpm": (cells[dpm_idx]["text"].strip() if dpm_idx < len(cells) else "") or "Unassigned",
-                            "ps": (cells[ps_idx]["text"].strip() if ps_idx < len(cells) else "") or "Unassigned",
+                            "dpm": adm_dpm,
+                            "ps": adm_ps,
                             "value": val_txt or "$0",
                             "edit_url": f"{base}/item/{qkey}/edit",
                             "forecast_url": f"{base}/item/{qkey}/forecastValues",
                         }
         except Exception:
             pass
-    else:
-        # For non-admin users, check /viewShopWIP if permitted to mark Tekla-linked QKEYs
-        try:
-            wip_resp = session.get(f"{base}/viewShopWIP", allow_redirects=True, timeout=timeout)
-            if wip_resp.ok and "/login" not in wip_resp.url.lower() and "/accessdenied" not in wip_resp.url.lower():
-                pwip = _ScovilleTableParser()
-                pwip.feed(wip_resp.text)
-                hwip = {h.lower(): idx for idx, h in enumerate(pwip.headers)}
-                wq_idx = hwip.get("qkey", 4)
-                for row in pwip.rows:
-                    cells = row["cells"]
-                    if wq_idx < len(cells):
-                        wqk = cells[wq_idx]["text"].strip()
-                        if wqk in items_by_qkey:
-                            items_by_qkey[wqk]["tekla_linked"] = True
-        except Exception:
-            pass
+
+    # Scan /viewShopWIP (accessible to both admin and non-admin!) for Tekla-linked exclusion AND recent BOM tracking
+    tekla_recent_by_qkey: dict[str, dict] = {}
+    since_cutoff = (bom_since_date or "2026-11-24").strip()
+    try:
+        wip_resp = session.get(f"{base}/viewShopWIP", allow_redirects=True, timeout=timeout)
+        if wip_resp.ok and "/login" not in wip_resp.url.lower() and "/accessdenied" not in wip_resp.url.lower():
+            pwip = _ScovilleTableParser()
+            pwip.feed(wip_resp.text)
+            hwip = {h.lower(): idx for idx, h in enumerate(pwip.headers)}
+            wj_idx = hwip.get("job #", 0)
+            wsite_idx = hwip.get("job name", 1)
+            wsub_idx = hwip.get("sub category", 2)
+            wfab_idx = hwip.get("fab #", 4)
+            wseq_idx = hwip.get("seq", 13)
+            wdate_idx = hwip.get("received date", 23)
+            wtime_idx = hwip.get("time", 24)
+            wq_idx = hwip.get("qkey", 25)
+
+            for row in pwip.rows:
+                cells = row["cells"]
+                if len(cells) <= max(wq_idx, wdate_idx, wfab_idx):
+                    continue
+                wqk = cells[wq_idx]["text"].strip()
+                if not wqk.isdigit():
+                    continue
+                if wqk in items_by_qkey:
+                    items_by_qkey[wqk]["tekla_linked"] = True
+
+                fab_lot = cells[wfab_idx]["text"].strip()
+                raw_rdate = cells[wdate_idx]["text"].strip()
+                raw_rtime = cells[wtime_idx]["text"].strip() if wtime_idx < len(cells) else ""
+                iso_d, iso_dt, disp_dt = _parse_wip_datetime(raw_rdate, raw_rtime)
+
+                if iso_d and iso_d >= since_cutoff and fab_lot:
+                    meta = admin_meta_by_qkey.get(wqk, {})
+                    on_hold = bool(meta.get("on_hold") or wqk in on_hold_qkeys or "onhold" in row.get("tr_class", "").lower())
+                    tekla_recent_by_qkey[wqk] = {
+                        "qkey": wqk,
+                        "job_number": cells[wj_idx]["text"].strip(),
+                        "job_site": cells[wsite_idx]["text"].strip(),
+                        "category": meta.get("category", ""),
+                        "sub_category": cells[wsub_idx]["text"].strip(),
+                        "sequence": cells[wseq_idx]["text"].strip() if wseq_idx < len(cells) else "",
+                        "lot_number": fab_lot.upper(),
+                        "dpm": meta.get("dpm") or "Unassigned",
+                        "ps": meta.get("ps") or "Unassigned",
+                        "on_hold": on_hold,
+                        "linked_date": iso_d,
+                        "linked_at": iso_dt,
+                        "linked_display": disp_dt,
+                        "edit_url": f"{base}/item/{wqk}/edit",
+                    }
+    except Exception:
+        pass
 
     # Remove Tekla-linked items from date-overdue tracking
     for qk in [k for k, v in items_by_qkey.items() if v.get("tekla_linked")]:
         del items_by_qkey[qk]
 
-    # Pass 4: Thread-safe parallel fetch of `/item/<QKEY>/edit` (for hidden past-due dates & DPM/PS/Tekla verification)
-    qkeys_to_inspect = [
-        qkey
-        for qkey, it in items_by_qkey.items()
-        if qkey in ps_req_needs_edit_lookup
-        or it.get("dpm") == "Unassigned"
-        or any(it["milestones"][k]["status"] == "unscheduled" for k in DETAILING_CALENDAR_KEYS)
+    # Pass 4: Thread-safe parallel fetch of `/item/<QKEY>/edit` (for hidden past-due dates, DPM/PS, and WIP access check)
+    wip_qkeys_to_inspect = [
+        qk
+        for qk, wit in tekla_recent_by_qkey.items()
+        if is_my_view or wit.get("dpm") == "Unassigned"
     ]
+    qkeys_to_inspect = list(
+        dict.fromkeys(
+            [
+                qkey
+                for qkey, it in items_by_qkey.items()
+                if qkey in ps_req_needs_edit_lookup
+                or it.get("dpm") == "Unassigned"
+                or any(it["milestones"][k]["status"] == "unscheduled" for k in DETAILING_CALENDAR_KEYS)
+            ]
+            + wip_qkeys_to_inspect
+        )
+    )
 
     base_cookies = session.cookies.get_dict()
     _tls = threading.local()
@@ -775,7 +882,7 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
             _tls.session = ws
         return ws
 
-    def _fetch_one_edit(qkey: str) -> tuple[str, dict[str, dict] | None, bool, str, str]:
+    def _fetch_one_edit(qkey: str) -> tuple[str, dict[str, dict] | None, bool, str, str, bool]:
         ws = _get_worker_session()
         for _ in range(2):
             try:
@@ -783,21 +890,21 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
                 if "/login" in r.url.lower():
                     ws.post(login_url, data={"email": email, "password": password}, allow_redirects=True, timeout=timeout)
                     continue
-                if "/accessdenied" in r.url.lower():
-                    return qkey, None, False, "", ""
+                if "/accessdenied" in r.url.lower() or "not authorized" in r.text.lower():
+                    return qkey, None, False, "", "", True
                 if r.ok:
                     ms, is_linked, e_dpm, e_ps = _extract_edit_details(r.text, tekla_linked=False)
-                    if ms is not None:
-                        return qkey, ms, is_linked, e_dpm, e_ps
+                    if ms is not None or e_dpm:
+                        return qkey, ms, is_linked, e_dpm, e_ps, False
             except Exception:
                 pass
-        return qkey, None, False, "", ""
+        return qkey, None, False, "", "", False
 
     if qkeys_to_inspect:
         with ThreadPoolExecutor(max_workers=5) as pool:
             edit_futs = [pool.submit(_fetch_one_edit, q) for q in qkeys_to_inspect]
             for fut in as_completed(edit_futs):
-                qkey, exact_ms, is_linked, e_dpm, e_ps = fut.result()
+                qkey, exact_ms, is_linked, e_dpm, e_ps, denied = fut.result()
                 if qkey in items_by_qkey:
                     if is_linked:
                         items_by_qkey[qkey]["tekla_linked"] = True
@@ -807,10 +914,35 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
                         items_by_qkey[qkey]["dpm"] = e_dpm
                     if e_ps:
                         items_by_qkey[qkey]["ps"] = e_ps
+                if qkey in tekla_recent_by_qkey:
+                    if not denied:
+                        if e_dpm:
+                            tekla_recent_by_qkey[qkey]["dpm"] = e_dpm
+                        if e_ps:
+                            tekla_recent_by_qkey[qkey]["ps"] = e_ps
+                    else:
+                        tekla_recent_by_qkey[qkey]["_edit_denied"] = True
 
     # Remove any items discovered to be Tekla-linked during /edit inspection
     for qk in [k for k, v in items_by_qkey.items() if v.get("tekla_linked")]:
         del items_by_qkey[qk]
+
+    # Map Job # -> (DPM, PS) from active items to enrich WIP items & scope /my/ users cleanly
+    job_dpm_ps: dict[str, tuple[str, str]] = {}
+    for it in items_by_qkey.values():
+        jn = it.get("job_number") or ""
+        if jn and it.get("dpm") and it["dpm"] != "Unassigned":
+            job_dpm_ps[jn] = (it["dpm"], it.get("ps") or "Unassigned")
+
+    for qk in list(tekla_recent_by_qkey.keys()):
+        wit = tekla_recent_by_qkey[qk]
+        jn = wit.get("job_number") or ""
+        if wit.get("dpm") == "Unassigned" and jn in job_dpm_ps:
+            wit["dpm"], wit["ps"] = job_dpm_ps[jn]
+        if is_my_view and wit.pop("_edit_denied", False) and jn not in job_dpm_ps:
+            del tekla_recent_by_qkey[qk]
+        else:
+            wit.pop("_edit_denied", None)
 
     # For non-admin (/my/) users, scope $0 candidates to their own accessible jobs/DPMs
     if is_my_view and items_by_qkey:
@@ -874,8 +1006,29 @@ def fetch_scoville_data(base_url: str, email: str, password: str, timeout: int =
         "items": sorted(items_by_qkey.values(), key=lambda x: int(x["qkey"])),
         "zero_value_items": caught_zero_items,
         "zero_value_scanned": len(zero_candidates),
+        "tekla_recent_items": sorted(
+            tekla_recent_by_qkey.values(),
+            key=lambda x: (x.get("linked_at") or "", int(x["qkey"])),
+            reverse=True,
+        ),
         "is_scoped_user": is_my_view,
     }
+
+
+def _format_elapsed_hours(hours: float) -> str:
+    if hours < 1:
+        mins = max(1, int(round(hours * 60)))
+        return f"{mins}m ago"
+    whole_h = int(hours)
+    rem_m = int(round((hours - whole_h) * 60))
+    if rem_m == 60:
+        whole_h += 1
+        rem_m = 0
+    if whole_h >= 24:
+        days = whole_h // 24
+        rem_h = whole_h % 24
+        return f"{days}d {rem_h}h ago" if rem_h else f"{days}d ago"
+    return f"{whole_h}h {rem_m}m ago" if rem_m else f"{whole_h}h ago"
 
 
 def evaluate_items_and_packets(
@@ -889,6 +1042,8 @@ def evaluate_items_and_packets(
     zero_value_items: list[dict] | None = None,
     zero_value_scanned: int = 0,
     due_soon_days: int = 7,
+    tekla_recent_items: list[dict] | None = None,
+    bom_seen_keys: set[str] | list[str] | dict | None = None,
 ) -> dict:
     """
     Evaluates:
@@ -906,12 +1061,18 @@ def evaluate_items_and_packets(
 
     req_filter = (milestone_filter or "").strip()
     is_zero_mode = req_filter == "zero_value"
+    is_bom_mode = req_filter == "missing_bom"
+    is_special_mode = is_zero_mode or is_bom_mode
     ms_filter = req_filter if req_filter in MILESTONE_BY_KEY else ""
 
     inc_today = settings.get("include_due_today", False) if include_due_today is None else include_due_today
     exc_hold = settings.get("exclude_on_hold", True) if exclude_on_hold is None else exclude_on_hold
     default_email = (settings.get("default_recipient_email") or "akanday@qiworks.com").strip()
     grouping_mode = settings.get("grouping_mode", "digest")
+    try:
+        bom_grace_hours = max(0.5, float(settings.get("bom_grace_hours") or 2))
+    except (TypeError, ValueError):
+        bom_grace_hours = 2.0
 
     dir_by_name = {d["name"].lower(): d for d in directory}
 
@@ -925,6 +1086,39 @@ def evaluate_items_and_packets(
     active_zero_items = [
         z for z in (zero_value_items or []) if not (exc_hold and z.get("on_hold"))
     ]
+
+    # Evaluate Missing BOM items (> bom_grace_hours since Tekla link, not in bom_seen_keys)
+    seen_bom_set = set(bom_seen_keys.keys() if isinstance(bom_seen_keys, dict) else (bom_seen_keys or []))
+    now_dt = datetime.now()
+    active_tekla_recent = [
+        t for t in (tekla_recent_items or []) if not (exc_hold and t.get("on_hold"))
+    ]
+    missing_bom_candidates: list[dict] = []
+    bom_within_grace_count = 0
+    bom_verified_count = 0
+
+    for t in active_tekla_recent:
+        jl_key = normalize_job_lot_key(t.get("job_number", ""), t.get("lot_number", ""))
+        if jl_key in seen_bom_set:
+            bom_verified_count += 1
+            continue
+        linked_iso = t.get("linked_at") or ""
+        try:
+            linked_dt = datetime.strptime(linked_iso[:19], "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            linked_dt = now_dt
+        elapsed_h = max(0.0, (now_dt - linked_dt).total_seconds() / 3600.0)
+        if elapsed_h >= bom_grace_hours:
+            missing_bom_candidates.append(
+                {
+                    **t,
+                    "job_lot_key": jl_key,
+                    "elapsed_hours": round(elapsed_h, 1),
+                    "elapsed_display": _format_elapsed_hours(elapsed_h),
+                }
+            )
+        else:
+            bom_within_grace_count += 1
 
     due_soon_days = max(1, min(365, int(due_soon_days or 7)))
 
@@ -998,17 +1192,17 @@ def evaluate_items_and_packets(
                 "is_due_soon": is_due_soon,
             }
             eval_milestones[m_key] = enriched
-            if is_due_soon and not is_zero_mode and (not ms_filter or ms_filter == m_key):
+            if is_due_soon and not is_special_mode and (not ms_filter or ms_filter == m_key):
                 filtered_item_due_soon_list.append(enriched)
             if is_overdue:
                 milestone_counts[m_key] += 1
                 all_item_overdue_list.append(enriched)
-                if not is_zero_mode and (not ms_filter or ms_filter == m_key):
+                if not is_special_mode and (not ms_filter or ms_filter == m_key):
                     filtered_item_overdue_list.append(enriched)
 
         if all_item_overdue_list:
             all_overdue_items_unfiltered_count += 1
-        if item_has_due_soon and not is_zero_mode:
+        if item_has_due_soon and not is_special_mode:
             due_soon_count += 1
 
         has_ps_overdue = any(m["notify_ps"] for m in filtered_item_overdue_list)
@@ -1150,6 +1344,11 @@ def evaluate_items_and_packets(
                 "zero_value_scanned": zero_value_scanned,
                 "zero_value_released_count": sum(1 for z in active_zero_items if z.get("released")),
                 "zero_value_unreleased_count": sum(1 for z in active_zero_items if not z.get("released")),
+                "missing_bom_count": len(missing_bom_candidates),
+                "missing_bom_within_grace_count": bom_within_grace_count,
+                "missing_bom_verified_count": bom_verified_count,
+                "missing_bom_scanned": len(active_tekla_recent),
+                "bom_grace_hours": bom_grace_hours,
                 "recipients_to_email": len(packets),
                 "due_soon_days": due_soon_days,
                 "due_soon_count": 0,
@@ -1158,6 +1357,130 @@ def evaluate_items_and_packets(
             },
             "items": zero_enriched_items,
             "overdue_items": zero_enriched_items,
+            "due_soon_items": [],
+            "packets": packets,
+        }
+
+    # SEPARATE MODE: `Missing BOM` (> 2h since Tekla link, DPM ONLY, NOT in `All`!)
+    if is_bom_mode:
+        bom_enriched_items: list[dict] = []
+        grace_lbl = f"{int(bom_grace_hours)}h" if float(bom_grace_hours).is_integer() else f"{bom_grace_hours}h"
+        for b in sorted(missing_bom_candidates, key=lambda x: (-x["elapsed_hours"], int(x["qkey"]))):
+            dpm_email, dpm_active = resolve_person(b["dpm"])
+            b_badge = {
+                "key": "missing_bom",
+                "label": f"Missing BOM Email (>{grace_lbl})",
+                "short": "Missing BOM",
+                "display": f"Lot {b['lot_number']} · Linked {b['elapsed_display']}",
+                "days_overdue": None,
+                "is_overdue": True,
+                "is_missing_bom": True,
+                "lot_number": b["lot_number"],
+                "linked_display": b["linked_display"],
+                "elapsed_display": b["elapsed_display"],
+            }
+            bom_enriched_items.append(
+                {
+                    **b,
+                    "is_missing_bom_item": True,
+                    "overdue_milestones": [b_badge],
+                    "relevant_milestones": [b_badge],
+                    "is_overdue": True,
+                    "notify_recipients": [
+                        {"role": "DPM", "name": b["dpm"], "email": dpm_email, "active": dpm_active}
+                    ],
+                }
+            )
+
+        packets = []
+        if grouping_mode == "per_item":
+            for bit in bom_enriched_items:
+                dpm_email, dpm_active = resolve_person(bit["dpm"])
+                if not dpm_active or not dpm_email:
+                    continue
+                packets.append(
+                    {
+                        "packet_id": f"bom_item:{bit['qkey']}",
+                        "packet_kind": "missing_bom",
+                        "recipient_name": f"{bit['dpm']} (DPM — Missing BOM)",
+                        "person_name": bit["dpm"],
+                        "role": "DPM (Missing BOM)",
+                        "to_emails": [dpm_email],
+                        "item_count": 1,
+                        "milestone_count": 1,
+                        "qkeys": [bit["qkey"]],
+                        "items": [bit],
+                    }
+                )
+        else:
+            dpm_buckets = {}
+            for bit in bom_enriched_items:
+                dpm_name = bit["dpm"]
+                dpm_email, dpm_active = resolve_person(dpm_name)
+                if not dpm_active or not dpm_email:
+                    continue
+                b_key = f"bom_dpm:{dpm_name.strip().lower()}"
+                if b_key not in dpm_buckets:
+                    dpm_buckets[b_key] = {
+                        "packet_id": b_key,
+                        "packet_kind": "missing_bom",
+                        "person_name": dpm_name,
+                        "role": "DPM (Missing BOM)",
+                        "to_emails": [dpm_email],
+                        "items": [],
+                    }
+                dpm_buckets[b_key]["items"].append(bit)
+
+            for b in sorted(dpm_buckets.values(), key=lambda x: x["person_name"].lower()):
+                packets.append(
+                    {
+                        "packet_id": b["packet_id"],
+                        "packet_kind": "missing_bom",
+                        "recipient_name": f"{b['person_name']} ({b['role']})",
+                        "person_name": b["person_name"],
+                        "role": b["role"],
+                        "to_emails": b["to_emails"],
+                        "item_count": len(b["items"]),
+                        "milestone_count": len(b["items"]),
+                        "qkeys": [x["qkey"] for x in b["items"]],
+                        "items": b["items"],
+                    }
+                )
+
+        return {
+            "as_of_date": ref_date.isoformat(),
+            "as_of_display": ref_date.strftime("%m/%d/%Y"),
+            "include_due_today": inc_today,
+            "exclude_on_hold": exc_hold,
+            "milestone_filter": "missing_bom",
+            "is_zero_mode": False,
+            "is_bom_mode": True,
+            "summary": {
+                "total_active_items": len(evaluated_items),
+                "total_raw_items": len(raw_items),
+                "on_hold_excluded": sum(1 for x in (tekla_recent_items or []) if x.get("on_hold")) if exc_hold else 0,
+                "overdue_items_count": len(bom_enriched_items),
+                "all_overdue_items_count": all_overdue_items_unfiltered_count,
+                "overdue_milestones_total": len(bom_enriched_items),
+                "all_overdue_milestones_total": sum(milestone_counts.values()),
+                "milestone_breakdown": milestone_counts,
+                "zero_value_count": len(active_zero_items),
+                "zero_value_scanned": zero_value_scanned,
+                "zero_value_released_count": sum(1 for z in active_zero_items if z.get("released")),
+                "zero_value_unreleased_count": sum(1 for z in active_zero_items if not z.get("released")),
+                "missing_bom_count": len(missing_bom_candidates),
+                "missing_bom_within_grace_count": bom_within_grace_count,
+                "missing_bom_verified_count": bom_verified_count,
+                "missing_bom_scanned": len(active_tekla_recent),
+                "bom_grace_hours": bom_grace_hours,
+                "recipients_to_email": len(packets),
+                "due_soon_days": due_soon_days,
+                "due_soon_count": 0,
+                "due_soon_milestones_total": 0,
+                "due_soon_3d_count": 0,
+            },
+            "items": bom_enriched_items,
+            "overdue_items": bom_enriched_items,
             "due_soon_items": [],
             "packets": packets,
         }
@@ -1293,6 +1616,11 @@ def evaluate_items_and_packets(
             "zero_value_scanned": zero_value_scanned,
             "zero_value_released_count": sum(1 for z in active_zero_items if z.get("released")),
             "zero_value_unreleased_count": sum(1 for z in active_zero_items if not z.get("released")),
+            "missing_bom_count": len(missing_bom_candidates),
+            "missing_bom_within_grace_count": bom_within_grace_count,
+            "missing_bom_verified_count": bom_verified_count,
+            "missing_bom_scanned": len(active_tekla_recent),
+            "bom_grace_hours": bom_grace_hours,
             "recipients_to_email": len(packets),
             "due_soon_days": due_soon_days,
             "due_soon_count": due_soon_count,

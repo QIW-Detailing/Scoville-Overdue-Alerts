@@ -46,6 +46,8 @@ def render_packet_email(packet: dict, settings: dict, as_of_display: str) -> tup
     """Returns (html_body, plain_text_body) in clean, organized Times New Roman for Outlook."""
     if packet.get("packet_kind") == "zero_value":
         return _render_zero_value_packet_email(packet, settings, as_of_display)
+    if packet.get("packet_kind") == "missing_bom":
+        return _render_missing_bom_packet_email(packet, settings, as_of_display)
 
     recipient_label = packet.get("recipient_name", "Team")
     person_name = packet.get("person_name") or recipient_label.split("(")[0].strip() or "Team"
@@ -344,6 +346,141 @@ def _render_zero_value_packet_email(packet: dict, settings: dict, as_of_display:
     <tr>
       <td bgcolor="#f8fafc" style="background:#f8fafc;border-top:1px solid #cbd5e1;padding:10px 20px;{TNR}font-size:10pt;color:#475569;">
         Items where only the 3 default placeholder options ($1 Unbillable, $2 Unwritten CO, $3 Unapproved CO) exist are automatically skipped.
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+    return html_body, plain_text
+
+
+def _render_missing_bom_packet_email(packet: dict, settings: dict, as_of_display: str) -> tuple[str, str]:
+    recipient_label = packet.get("recipient_name", "DPM")
+    person_name = packet.get("person_name") or recipient_label.split("(")[0].strip() or "Team"
+    items = packet.get("items", [])
+    scoville_base = (settings.get("scoville_url") or "http://scoville:7555").rstrip("/")
+    grace_h = settings.get("bom_grace_hours") or 2
+
+    grouped_jobs = _group_items_by_job(items)
+    rows_html: list[str] = []
+    plain_lines = [
+        f"Hi {person_name},",
+        "",
+        f"MISSING BOM EMAIL — TEKLA-LINKED OVER {grace_h} HOURS WITHOUT BOM TRANSMITTAL",
+        f"Assigned DPM: {person_name} | Total Missing BOM Items: {len(items)} | Date: {as_of_display}",
+        "",
+    ]
+
+    for job_title, job_items in grouped_jobs:
+        cnt_word = f"{len(job_items)} item" if len(job_items) == 1 else f"{len(job_items)} items"
+        rows_html.append(
+            f'<tr>'
+            f'<td colspan="4" bgcolor="#e2e8f0" style="{TNR}background:#e2e8f0;padding:8px 12px;'
+            f'border:1px solid #cbd5e1;font-size:11.5pt;font-weight:bold;color:#0f172a;">'
+            f"{html.escape(job_title)} "
+            f'<span style="{TNR}font-size:10.5pt;font-weight:normal;color:#334155;">({cnt_word})</span>'
+            f"</td>"
+            f"</tr>"
+        )
+        plain_lines.append(f"=== {job_title} ({cnt_word}) ===")
+
+        for idx, it in enumerate(job_items):
+            bg = "#ffffff" if idx % 2 == 0 else "#f8fafc"
+            qkey = html.escape(str(it.get("qkey", "")))
+            edit_url = html.escape(it.get("edit_url") or f"{scoville_base}/item/{qkey}/edit")
+            lot_num = html.escape(str(it.get("lot_number", "")))
+            cat_line = it.get("category", "")
+            sub_line = it.get("sub_category", "")
+            seq = it.get("sequence", "")
+            linked_disp = html.escape(str(it.get("linked_display", "—")))
+            elapsed_disp = html.escape(str(it.get("elapsed_display", "")))
+
+            desc_parts = []
+            if cat_line:
+                desc_parts.append(f'<strong style="{TNR}color:#0f172a;">{html.escape(cat_line)}</strong>')
+            if sub_line:
+                desc_parts.append(f'<span style="{TNR}color:#334155;">{html.escape(sub_line)}</span>')
+            if seq:
+                desc_parts.append(f'<span style="{TNR}color:#475569;font-size:10pt;">Sequence: {html.escape(seq)}</span>')
+            scope_html = "<br>".join(desc_parts) or "—"
+
+            rows_html.append(
+                f'<tr bgcolor="{bg}" style="background:{bg};">'
+                f'<td width="105" align="center" valign="top" style="{TNR}padding:9px 10px;border:1px solid #cbd5e1;font-size:11.5pt;font-weight:bold;">'
+                f'<a href="{edit_url}" style="{TNR}color:#9a3412;text-decoration:underline;">{qkey}</a>'
+                f'<div style="{TNR}font-size:10.5pt;color:#7c2d12;font-weight:bold;margin-top:2px;">Lot #{lot_num}</div>'
+                f"</td>"
+                f'<td valign="top" style="{TNR}padding:9px 12px;border:1px solid #cbd5e1;font-size:11pt;line-height:1.4;">'
+                f"{scope_html}"
+                f"</td>"
+                f'<td valign="top" style="{TNR}padding:9px 12px;border:1px solid #cbd5e1;font-size:11pt;line-height:1.4;">'
+                f"<strong>Linked to Tekla:</strong> {linked_disp}<br>"
+                f'<span style="{TNR}color:#9a3412;font-weight:bold;">No BOM email found ({elapsed_disp})</span>'
+                f"</td>"
+                f'<td width="122" align="center" valign="middle" style="{TNR}padding:9px 10px;border:1px solid #cbd5e1;">'
+                f'{_outlook_button(edit_url, "View Item", "#9a3412")}'
+                f"</td>"
+                f"</tr>"
+            )
+
+            plain_lines.append(
+                f"  - QKEY {it.get('qkey')} | Lot #{it.get('lot_number')} | Linked: {it.get('linked_display')} ({it.get('elapsed_display')}) | {it.get('edit_url')}"
+            )
+        plain_lines.append("")
+
+    plain_text = "\n".join(plain_lines)
+    html_body = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Missing BOM Email</title>
+  <style type="text/css">
+    body, table, td, th, p, div, a, span {{
+      font-family: 'Times New Roman', Times, serif !important;
+    }}
+  </style>
+</head>
+<body style="margin:0;padding:18px;background-color:#f8fafc;{TNR}color:#0f172a;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:920px;margin:0 auto;background:#ffffff;border:1px solid #94a3b8;border-collapse:collapse;">
+    <tr>
+      <td bgcolor="#9a3412" style="background:#9a3412;color:#ffffff;padding:14px 20px;{TNR}border-bottom:2px solid #431407;">
+        <div style="{TNR}font-size:15pt;font-weight:bold;color:#ffffff;">Missing BOM Transmittal Alert</div>
+        <div style="{TNR}font-size:11pt;color:#ffedd5;margin-top:3px;">
+          Assigned DPM: <strong>{html.escape(person_name)}</strong> &nbsp;&bull;&nbsp;
+          Missing BOM Items: <strong>{len(items)}</strong> &nbsp;&bull;&nbsp;
+          Report Date: <strong>{html.escape(as_of_display)}</strong>
+        </div>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:16px 20px 12px 20px;{TNR}font-size:12pt;line-height:1.5;color:#0f172a;">
+        <p style="margin:0 0 8px 0;{TNR}font-size:12pt;">Hi <strong>{html.escape(person_name)}</strong>,</p>
+        <p style="margin:0;{TNR}font-size:12pt;">
+          The following items were linked to Tekla over <strong>{html.escape(str(grace_h))} hours</strong> ago, and no matching BOM transmittal email (by Job # &amp; Lot/FAB #) has been received in <strong>BOM@qiworks.com</strong> yet.
+          Please send the BOM transmittal email to <strong>BOM@qiworks.com</strong>.
+        </p>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:4px 20px 18px 20px;{TNR}">
+        <table width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;border:1px solid #cbd5e1;{TNR}">
+          <thead>
+            <tr bgcolor="#f1f5f9" style="background:#f1f5f9;">
+              <th width="105" align="center" style="{TNR}padding:8px 10px;border:1px solid #cbd5e1;font-size:10.5pt;font-weight:bold;color:#1e293b;">QKEY / Lot #</th>
+              <th align="left" style="{TNR}padding:8px 12px;border:1px solid #cbd5e1;font-size:10.5pt;font-weight:bold;color:#1e293b;">Category / Description</th>
+              <th align="left" style="{TNR}padding:8px 12px;border:1px solid #cbd5e1;font-size:10.5pt;font-weight:bold;color:#1e293b;">Tekla Link Time</th>
+              <th width="122" align="center" style="{TNR}padding:8px 10px;border:1px solid #cbd5e1;font-size:10.5pt;font-weight:bold;color:#1e293b;">Scoville</th>
+            </tr>
+          </thead>
+          <tbody>
+            {"".join(rows_html)}
+          </tbody>
+        </table>
+      </td>
+    </tr>
+    <tr>
+      <td bgcolor="#f8fafc" style="background:#f8fafc;border-top:1px solid #cbd5e1;padding:10px 20px;{TNR}font-size:10pt;color:#475569;">
+        Matched by Job # and Transmittal / FAB Lot # (e.g. 45049 - Transmittal #F002) sent to BOM@qiworks.com.
       </td>
     </tr>
   </table>

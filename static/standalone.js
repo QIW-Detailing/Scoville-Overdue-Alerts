@@ -27,10 +27,39 @@
     return Math.round((tRef - tDue) / 86400000);
   }
 
+  function normalizeJobLotKey(jobNum, lotNum) {
+    const j = String(jobNum || "").trim();
+    const raw = String(lotNum || "").trim().toUpperCase().replace(/^#+/, "");
+    const m = /^([A-Z]{1,3})0*(\d{1,4})$/.exec(raw);
+    if (m) {
+      const n = Number(m[2]);
+      return `${j}:${m[1]}${n < 1000 ? String(n).padStart(3, "0") : String(n)}`;
+    }
+    return `${j}:${raw}`;
+  }
+
+  function formatElapsedHours(h) {
+    if (h < 1) return `${Math.max(1, Math.round(h * 60))}m ago`;
+    let wh = Math.floor(h);
+    let rm = Math.round((h - wh) * 60);
+    if (rm === 60) {
+      wh++;
+      rm = 0;
+    }
+    if (wh >= 24) {
+      const d = Math.floor(wh / 24);
+      const rh = wh % 24;
+      return rh ? `${d}d ${rh}h ago` : `${d}d ago`;
+    }
+    return rm ? `${wh}h ${rm}m ago` : `${wh}h ago`;
+  }
+
   function evaluateSnapshot(snapshot, directory, settings, params) {
     const rawItems = snapshot.items || [];
     const zeroValueItems = snapshot.zero_value_items || [];
     const zeroValueScanned = snapshot.zero_value_scanned || 0;
+    const teklaRecentItems = snapshot.tekla_recent_items || [];
+    const bomSeenKeys = new Set(snapshot.bom_seen_keys || []);
     const milestones = snapshot.milestones || [];
 
     const now = new Date();
@@ -42,10 +71,13 @@
     const excHold = params.exclude_on_hold !== undefined ? Boolean(params.exclude_on_hold) : true;
     const reqFilter = (params.milestone || "").trim();
     const isZeroMode = reqFilter === "zero_value";
+    const isBomMode = reqFilter === "missing_bom";
+    const isSpecialMode = isZeroMode || isBomMode;
     const validKeys = new Set(milestones.map((m) => m.key));
     const msFilter = validKeys.has(reqFilter) ? reqFilter : "";
     const defaultEmail = (settings.default_recipient_email || "akanday@qiworks.com").trim();
     const groupingMode = settings.grouping_mode || "digest";
+    const bomGraceHours = Math.max(0.5, Number(settings.bom_grace_hours) || 2);
 
     const dirByName = {};
     (directory || []).forEach((d) => {
@@ -59,6 +91,30 @@
     }
 
     const activeZeroItems = zeroValueItems.filter((z) => !(excHold && z.on_hold));
+    const activeTeklaRecent = teklaRecentItems.filter((t) => !(excHold && t.on_hold));
+    const missingBomCandidates = [];
+    let bomWithinGraceCount = 0;
+    let bomVerifiedCount = 0;
+
+    for (const t of activeTeklaRecent) {
+      const jlKey = normalizeJobLotKey(t.job_number, t.lot_number);
+      if (bomSeenKeys.has(jlKey)) {
+        bomVerifiedCount++;
+        continue;
+      }
+      const lDt = t.linked_at ? new Date(t.linked_at) : now;
+      const elapsedH = Math.max(0, (now.getTime() - lDt.getTime()) / 3600000);
+      if (elapsedH >= bomGraceHours) {
+        missingBomCandidates.push({
+          ...t,
+          job_lot_key: jlKey,
+          elapsed_hours: Math.round(elapsedH * 10) / 10,
+          elapsed_display: formatElapsedHours(elapsedH),
+        });
+      } else {
+        bomWithinGraceCount++;
+      }
+    }
     const dueSoonDays = Math.max(1, Math.min(365, Number(params.due_soon_days) || 7));
     const evaluatedItems = [];
     const overdueItems = [];
@@ -128,20 +184,20 @@
           is_due_soon: isDueSoon,
         };
         evalMilestones[mKey] = enriched;
-        if (isDueSoon && !isZeroMode && (!msFilter || msFilter === mKey)) {
+        if (isDueSoon && !isSpecialMode && (!msFilter || msFilter === mKey)) {
           filteredItemDueSoon.push(enriched);
         }
         if (isOverdue) {
           milestoneCounts[mKey] = (milestoneCounts[mKey] || 0) + 1;
           allItemOverdue.push(enriched);
-          if (!isZeroMode && (!msFilter || msFilter === mKey)) {
+          if (!isSpecialMode && (!msFilter || msFilter === mKey)) {
             filteredItemOverdue.push(enriched);
           }
         }
       }
 
       if (allItemOverdue.length > 0) allOverdueItemsUnfilteredCount++;
-      if (itemHasDueSoon && !isZeroMode) dueSoonCount++;
+      if (itemHasDueSoon && !isSpecialMode) dueSoonCount++;
 
       const hasPsOverdue = filteredItemOverdue.some((m) => m.notify_ps);
       const [dpmEmail, dpmActive] = resolvePerson(item.dpm);
@@ -288,6 +344,11 @@
           zero_value_scanned: zeroValueScanned,
           zero_value_released_count: activeZeroItems.filter((z) => z.released).length,
           zero_value_unreleased_count: activeZeroItems.filter((z) => !z.released).length,
+          missing_bom_count: missingBomCandidates.length,
+          missing_bom_within_grace_count: bomWithinGraceCount,
+          missing_bom_verified_count: bomVerifiedCount,
+          missing_bom_scanned: activeTeklaRecent.length,
+          bom_grace_hours: bomGraceHours,
           recipients_to_email: packets.length,
           due_soon_days: dueSoonDays,
           due_soon_count: 0,
@@ -296,6 +357,108 @@
         },
         items: zeroEnriched,
         overdue_items: zeroEnriched,
+        due_soon_items: [],
+        packets,
+      };
+    }
+
+    if (isBomMode) {
+      const graceLbl = `${bomGraceHours}h`;
+      const bomEnriched = [...missingBomCandidates]
+        .sort((a, b) => b.elapsed_hours - a.elapsed_hours || Number(a.qkey) - Number(b.qkey))
+        .map((b) => {
+          const [dpmEmail, dpmActive] = resolvePerson(b.dpm);
+          const bBadge = {
+            key: "missing_bom",
+            label: `Missing BOM Email (>${graceLbl})`,
+            short: "Missing BOM",
+            display: `Lot ${b.lot_number} · Linked ${b.elapsed_display}`,
+            days_overdue: null,
+            is_overdue: true,
+            is_missing_bom: true,
+            lot_number: b.lot_number,
+            linked_display: b.linked_display,
+            elapsed_display: b.elapsed_display,
+          };
+          return {
+            ...b,
+            is_missing_bom_item: true,
+            overdue_milestones: [bBadge],
+            relevant_milestones: [bBadge],
+            is_overdue: true,
+            notify_recipients: [{ role: "DPM", name: b.dpm, email: dpmEmail, active: dpmActive }],
+          };
+        });
+
+      const packets = [];
+      const dpmBuckets = {};
+      for (const bit of bomEnriched) {
+        const [dpmEmail, dpmActive] = resolvePerson(bit.dpm);
+        if (!dpmActive || !dpmEmail) continue;
+        const bKey = `bom_dpm:${bit.dpm.trim().toLowerCase()}`;
+        if (!dpmBuckets[bKey]) {
+          dpmBuckets[bKey] = {
+            packet_id: bKey,
+            packet_kind: "missing_bom",
+            person_name: bit.dpm,
+            role: "DPM (Missing BOM)",
+            to_emails: [dpmEmail],
+            items: [],
+          };
+        }
+        dpmBuckets[bKey].items.push(bit);
+      }
+      Object.values(dpmBuckets)
+        .sort((a, b) => a.person_name.localeCompare(b.person_name))
+        .forEach((b) => {
+          packets.push({
+            packet_id: b.packet_id,
+            packet_kind: "missing_bom",
+            recipient_name: `${b.person_name} (${b.role})`,
+            person_name: b.person_name,
+            role: b.role,
+            to_emails: b.to_emails,
+            item_count: b.items.length,
+            milestone_count: b.items.length,
+            qkeys: b.items.map((x) => x.qkey),
+            items: b.items,
+          });
+        });
+
+      return {
+        as_of_date: refIso,
+        as_of_display: refDisplay,
+        include_due_today: incToday,
+        exclude_on_hold: excHold,
+        milestone_filter: "missing_bom",
+        is_zero_mode: false,
+        is_bom_mode: true,
+        summary: {
+          total_active_items: evaluatedItems.length,
+          total_raw_items: rawItems.length,
+          on_hold_excluded: excHold ? teklaRecentItems.filter((x) => x.on_hold).length : 0,
+          overdue_items_count: bomEnriched.length,
+          all_overdue_items_count: allOverdueItemsUnfilteredCount,
+          overdue_milestones_total: bomEnriched.length,
+          all_overdue_milestones_total: allMilestonesSum,
+          milestone_breakdown: milestoneCounts,
+          zero_value_count: activeZeroItems.length,
+          zero_value_scanned: zeroValueScanned,
+          zero_value_released_count: activeZeroItems.filter((z) => z.released).length,
+          zero_value_unreleased_count: activeZeroItems.filter((z) => !z.released).length,
+          missing_bom_count: missingBomCandidates.length,
+          missing_bom_within_grace_count: bomWithinGraceCount,
+          missing_bom_verified_count: bomVerifiedCount,
+          missing_bom_scanned: activeTeklaRecent.length,
+          bom_grace_hours: bomGraceHours,
+          recipients_to_email: packets.length,
+          due_soon_days: dueSoonDays,
+          due_soon_count: 0,
+          due_soon_milestones_total: 0,
+          due_soon_3d_count: 0,
+        },
+        items: bomEnriched,
+        overdue_items: bomEnriched,
         due_soon_items: [],
         packets,
       };
@@ -420,6 +583,11 @@
         zero_value_scanned: zeroValueScanned,
         zero_value_released_count: activeZeroItems.filter((z) => z.released).length,
         zero_value_unreleased_count: activeZeroItems.filter((z) => !z.released).length,
+        missing_bom_count: missingBomCandidates.length,
+        missing_bom_within_grace_count: bomWithinGraceCount,
+        missing_bom_verified_count: bomVerifiedCount,
+        missing_bom_scanned: activeTeklaRecent.length,
+        bom_grace_hours: bomGraceHours,
         recipients_to_email: packets.length,
         due_soon_days: dueSoonDays,
         due_soon_count: dueSoonCount,
@@ -458,6 +626,56 @@
     const recipientLabel = packet.recipient_name || "Team";
     const personName = packet.person_name || recipientLabel.split("(")[0].trim() || "Team";
     const items = packet.items || [];
+
+    if (packet.packet_kind === "missing_bom") {
+      const rows = [];
+      for (const [jobTitle, jobItems] of groupItemsByJob(items)) {
+        const cntWord = jobItems.length === 1 ? "1 item" : `${jobItems.length} items`;
+        rows.push(
+          `<tr><td colspan="4" bgcolor="#e2e8f0" style="${TNR}background:#e2e8f0;padding:8px 12px;border:1px solid #cbd5e1;font-size:11.5pt;font-weight:bold;color:#0f172a;">` +
+            `${escHtml(jobTitle)} <span style="${TNR}font-size:10.5pt;font-weight:normal;color:#334155;">(${cntWord})</span></td></tr>`
+        );
+        jobItems.forEach((it, idx) => {
+          const bg = idx % 2 === 0 ? "#ffffff" : "#f8fafc";
+          const eUrl = escHtml(it.edit_url || `http://scoville:7555/item/${it.qkey}/edit`);
+          const desc = [
+            it.category ? `<strong style="${TNR}color:#0f172a;">${escHtml(it.category)}</strong>` : "",
+            it.sub_category ? `<span style="${TNR}color:#334155;">${escHtml(it.sub_category)}</span>` : "",
+            it.sequence ? `<span style="${TNR}color:#475569;font-size:10pt;">Sequence: ${escHtml(it.sequence)}</span>` : "",
+          ].filter(Boolean).join("<br>") || "—";
+          rows.push(
+            `<tr bgcolor="${bg}" style="background:${bg};">` +
+              `<td width="105" align="center" valign="top" style="${TNR}padding:9px 10px;border:1px solid #cbd5e1;font-size:11.5pt;font-weight:bold;">` +
+              `<a href="${eUrl}" style="${TNR}color:#9a3412;text-decoration:underline;">${escHtml(it.qkey)}</a>` +
+              `<div style="${TNR}font-size:10.5pt;color:#7c2d12;font-weight:bold;margin-top:2px;">Lot #${escHtml(it.lot_number || "")}</div></td>` +
+              `<td valign="top" style="${TNR}padding:9px 12px;border:1px solid #cbd5e1;font-size:11pt;line-height:1.4;">${desc}</td>` +
+              `<td valign="top" style="${TNR}padding:9px 12px;border:1px solid #cbd5e1;font-size:11pt;line-height:1.4;">` +
+              `<strong>Linked to Tekla:</strong> ${escHtml(it.linked_display || "—")}<br>` +
+              `<span style="${TNR}color:#9a3412;font-weight:bold;">No BOM email found (${escHtml(it.elapsed_display || "")})</span></td>` +
+              `<td width="122" align="center" valign="middle" style="${TNR}padding:9px 10px;border:1px solid #cbd5e1;">${outlookBtn(eUrl, "View Item", "#9a3412")}</td></tr>`
+          );
+        });
+      }
+      return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body,table,td,th,p,div,a,span{font-family:'Times New Roman',Times,serif !important;}</style></head>
+<body style="margin:0;padding:18px;background-color:#f8fafc;${TNR}color:#0f172a;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:920px;margin:0 auto;background:#ffffff;border:1px solid #94a3b8;border-collapse:collapse;">
+<tr><td bgcolor="#9a3412" style="background:#9a3412;color:#ffffff;padding:14px 20px;${TNR}border-bottom:2px solid #431407;">
+<div style="${TNR}font-size:15pt;font-weight:bold;color:#ffffff;">Missing BOM Transmittal Alert</div>
+<div style="${TNR}font-size:11pt;color:#ffedd5;margin-top:3px;">Assigned DPM: <strong>${escHtml(personName)}</strong> &nbsp;&bull;&nbsp; Missing BOM Items: <strong>${items.length}</strong> &nbsp;&bull;&nbsp; Report Date: <strong>${escHtml(asOfDisplay)}</strong></div>
+</td></tr>
+<tr><td style="padding:16px 20px 12px 20px;${TNR}font-size:12pt;line-height:1.5;color:#0f172a;">
+<p style="margin:0 0 8px 0;${TNR}font-size:12pt;">Hi <strong>${escHtml(personName)}</strong>,</p>
+<p style="margin:0;${TNR}font-size:12pt;">The following items were linked to Tekla over <strong>2 hours</strong> ago, and no matching BOM transmittal email (by Job # &amp; Lot/FAB #) has been received in <strong>BOM@qiworks.com</strong> yet. Please send the BOM transmittal email to <strong>BOM@qiworks.com</strong>.</p>
+</td></tr>
+<tr><td style="padding:4px 20px 18px 20px;${TNR}">
+<table width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;border:1px solid #cbd5e1;${TNR}">
+<thead><tr bgcolor="#f1f5f9" style="background:#f1f5f9;">
+<th width="105" align="center" style="${TNR}padding:8px 10px;border:1px solid #cbd5e1;font-size:10.5pt;font-weight:bold;color:#1e293b;">QKEY / Lot #</th>
+<th align="left" style="${TNR}padding:8px 12px;border:1px solid #cbd5e1;font-size:10.5pt;font-weight:bold;color:#1e293b;">Category / Description</th>
+<th align="left" style="${TNR}padding:8px 12px;border:1px solid #cbd5e1;font-size:10.5pt;font-weight:bold;color:#1e293b;">Tekla Link Time</th>
+<th width="122" align="center" style="${TNR}padding:8px 10px;border:1px solid #cbd5e1;font-size:10.5pt;font-weight:bold;color:#1e293b;">Scoville</th>
+</tr></thead><tbody>${rows.join("")}</tbody></table></td></tr></table></body></html>`;
+    }
 
     if (packet.packet_kind === "zero_value") {
       const rows = [];

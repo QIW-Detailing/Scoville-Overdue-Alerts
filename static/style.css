@@ -404,6 +404,30 @@ body {
   border: 1px solid #c7d2fe;
 }
 
+.ms-chip.bom-chip {
+  border-color: #fed7aa;
+  background: #fffaf5;
+}
+
+.ms-chip.bom-chip.active {
+  background: #ffedd5;
+  border-color: #c2410c;
+  color: #7c2d12;
+  font-weight: 700;
+}
+
+.ms-chip .count.bom-hot {
+  background: #ffedd5;
+  color: #9a3412;
+  border: 1px solid #fdba74;
+}
+
+.badge-bom {
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #fdba74;
+}
+
 .ms-chip {
   background: var(--surface);
   border: 1px solid var(--border);
