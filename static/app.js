@@ -24,6 +24,7 @@ const state = {
     zero_value_subject: "$0 Items on Scoville",
     bom_email_subject: "Missing BOM Email",
     bom_grace_hours: 2,
+    bom_since_date: "2026-11-25T09:41:00",
     default_recipient_email: "akanday@qiworks.com",
     grouping_mode: "digest",
     delivery_mode: "outlook_eml",
@@ -354,7 +355,7 @@ function renderHeaderAndKPIs() {
     const graceH = sum.bom_grace_hours || 2;
     document.getElementById("kpiTotalItems").textContent = sum.missing_bom_scanned || 0;
     document.getElementById("kpiOnHoldNote").textContent =
-      `Tekla-linked since 11/24 (${sum.missing_bom_verified_count || 0} BOM sent, ${sum.missing_bom_within_grace_count || 0} <${graceH}h grace)`;
+      `Tekla-linked from now onward (${sum.missing_bom_verified_count || 0} BOM sent, ${sum.missing_bom_within_grace_count || 0} <${graceH}h grace)`;
     document.getElementById("kpiOverdueItems").textContent = sum.overdue_items_count;
     document.getElementById("kpiOverdueMilestones").textContent =
       `Linked >${graceH}h ago w/o BOM email in Detailing Mailbox (separate from All)`;
@@ -556,7 +557,7 @@ function renderPackets() {
             hasClientFilter
               ? `No items match your active search / filter${f.search ? ` ("${esc(f.search)}")` : ""}.`
               : state.selectedMilestone === "missing_bom"
-              ? "All Tekla-linked items (>2h since 11/24/2026) have matching BOM emails recorded!"
+              ? "All newly Tekla-linked items (>2h from 11/25 9:41 AM onward) have matching BOM emails!"
               : isToday && !state.selectedMilestone
               ? "Great news — 0 items have missed dates strictly before today in Scoville."
               : "No items match your current selection / filter."

@@ -91,7 +91,13 @@
     }
 
     const activeZeroItems = zeroValueItems.filter((z) => !(excHold && z.on_hold));
-    const activeTeklaRecent = teklaRecentItems.filter((t) => !(excHold && t.on_hold));
+    const bomSinceCutoff = String(settings.bom_since_date || "2026-11-25T09:41:00").trim();
+    const activeTeklaRecent = teklaRecentItems.filter((t) => {
+      if (excHold && t.on_hold) return false;
+      return bomSinceCutoff.includes("T")
+        ? String(t.linked_at || "") >= bomSinceCutoff
+        : String(t.linked_date || "") >= bomSinceCutoff;
+    });
     const missingBomCandidates = [];
     let bomWithinGraceCount = 0;
     let bomVerifiedCount = 0;

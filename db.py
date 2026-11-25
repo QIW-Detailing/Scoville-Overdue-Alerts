@@ -44,7 +44,7 @@ DEFAULT_SETTINGS = {
     "zero_value_subject": "$0 Items on Scoville",
     "bom_email_subject": "Missing BOM Email",
     "bom_grace_hours": 2,
-    "bom_since_date": "2026-11-24",
+    "bom_since_date": "2026-11-25T09:41:00",
     "default_recipient_email": "akanday@qiworks.com",
     "grouping_mode": "digest",          # "digest" (per person) or "per_item" (per QKEY)
     "delivery_mode": "outlook_send",    # "outlook_send", "outlook_draft", "smtp", "dry_run"

@@ -437,7 +437,7 @@ def fetch_scoville_data(
     email: str,
     password: str,
     timeout: int = 25,
-    bom_since_date: str = "2026-11-24",
+    bom_since_date: str = "2026-11-25T09:41:00",
 ) -> dict:
     """
     Logs into Scoville and scrapes:
@@ -793,7 +793,7 @@ def fetch_scoville_data(
 
     # Scan /viewShopWIP (accessible to both admin and non-admin!) for Tekla-linked exclusion AND recent BOM tracking
     tekla_recent_by_qkey: dict[str, dict] = {}
-    since_cutoff = (bom_since_date or "2026-11-24").strip()
+    since_cutoff = (bom_since_date or "2026-11-25T09:41:00").strip()
     try:
         wip_resp = session.get(f"{base}/viewShopWIP", allow_redirects=True, timeout=timeout)
         if wip_resp.ok and "/login" not in wip_resp.url.lower() and "/accessdenied" not in wip_resp.url.lower():
@@ -824,7 +824,12 @@ def fetch_scoville_data(
                 raw_rtime = cells[wtime_idx]["text"].strip() if wtime_idx < len(cells) else ""
                 iso_d, iso_dt, disp_dt = _parse_wip_datetime(raw_rdate, raw_rtime)
 
-                if iso_d and iso_d >= since_cutoff and fab_lot:
+                is_after_cutoff = (
+                    bool(iso_dt and iso_dt >= since_cutoff)
+                    if "T" in since_cutoff
+                    else bool(iso_d and iso_d >= since_cutoff)
+                )
+                if is_after_cutoff and fab_lot:
                     meta = admin_meta_by_qkey.get(wqk, {})
                     on_hold = bool(meta.get("on_hold") or wqk in on_hold_qkeys or "onhold" in row.get("tr_class", "").lower())
                     tekla_recent_by_qkey[wqk] = {
@@ -1087,11 +1092,19 @@ def evaluate_items_and_packets(
         z for z in (zero_value_items or []) if not (exc_hold and z.get("on_hold"))
     ]
 
-    # Evaluate Missing BOM items (> bom_grace_hours since Tekla link, not in bom_seen_keys)
+    # Evaluate Missing BOM items (> bom_grace_hours since Tekla link, not in bom_seen_keys, strictly >= bom_since_date)
+    bom_since_cutoff = (settings.get("bom_since_date") or "2026-11-25T09:41:00").strip()
     seen_bom_set = set(bom_seen_keys.keys() if isinstance(bom_seen_keys, dict) else (bom_seen_keys or []))
     now_dt = datetime.now()
     active_tekla_recent = [
-        t for t in (tekla_recent_items or []) if not (exc_hold and t.get("on_hold"))
+        t
+        for t in (tekla_recent_items or [])
+        if not (exc_hold and t.get("on_hold"))
+        and (
+            (t.get("linked_at") or "") >= bom_since_cutoff
+            if "T" in bom_since_cutoff
+            else (t.get("linked_date") or "") >= bom_since_cutoff
+        )
     ]
     missing_bom_candidates: list[dict] = []
     bom_within_grace_count = 0

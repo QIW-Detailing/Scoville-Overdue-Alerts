@@ -123,7 +123,7 @@ def perform_scoville_sync() -> tuple[str, dict, list[dict]]:
     """Synchronizes items, $0 items, Tekla WIP & Detailing Mailbox BOMs, and updates DPM/PS directory."""
     with _sync_lock:
         settings = db.get_settings()
-        bom_since = settings.get("bom_since_date") or "2026-11-24"
+        bom_since = settings.get("bom_since_date") or "2026-11-25T09:41:00"
         try:
             bom_scanner.scan_outlook_bom_emails(since_iso=bom_since)
         except Exception:
@@ -691,7 +691,7 @@ def api_bom_scan():
     """Re-scans Detailing Mailbox & local Outlook for BOM emails without requiring a full Scoville scrape."""
     payload = request.get_json(silent=True) or {}
     settings = db.get_settings()
-    scan_res = bom_scanner.scan_outlook_bom_emails(since_iso=settings.get("bom_since_date") or "2026-11-24")
+    scan_res = bom_scanner.scan_outlook_bom_emails(since_iso=settings.get("bom_since_date") or "2026-11-25T09:41:00")
     synced_at, cache_payload = db.get_sync_cache()
     directory = db.get_directory()
     write_public_snapshot(synced_at, cache_payload, directory)
